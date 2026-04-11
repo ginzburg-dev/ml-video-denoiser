@@ -1,18 +1,34 @@
 """Training loop for NEFResidual and NEFTemporal.
 
 Supports:
-  - Mixed-precision training via torch.cuda.amp
+  - Mixed-precision training via torch.amp
   - Cosine annealing LR schedule with linear warmup
   - Checkpoint save/resume
   - TensorBoard logging
+  - Paired clean/noisy datasets mixed with synthetic noise generation
 
-Usage:
+Usage — synthetic noise only:
     uv run python training.py \\
         --model residual \\
         --data /path/to/clean/images \\
         --output checkpoints/residual_standard \\
-        --epochs 300 \\
-        --batch-size 16
+        --epochs 300
+
+Usage — paired data only:
+    uv run python training.py \\
+        --model residual \\
+        --paired-clean /path/to/clean \\
+        --paired-noisy /path/to/noisy \\
+        --output checkpoints/residual_paired
+
+Usage — mixed (60% synthetic, 40% paired):
+    uv run python training.py \\
+        --model residual \\
+        --data /path/to/clean/images \\
+        --paired-clean /path/to/clean \\
+        --paired-noisy /path/to/noisy \\
+        --paired-weight 0.4 \\
+        --output checkpoints/residual_mixed
 """
 
 import argparse
@@ -29,7 +45,13 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset import PatchDataset, VideoSequenceDataset
+from dataset import (
+    CombinedDataset,
+    PairedPatchDataset,
+    PairedVideoSequenceDataset,
+    PatchDataset,
+    VideoSequenceDataset,
+)
 from losses import NoiseWeightedL1Loss
 from models import ModelConfig, NEFResidual, NEFTemporal
 from noise_generators import MixedNoiseGenerator
@@ -165,7 +187,7 @@ def train(
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = warmup_cosine_schedule(optimizer, warmup_epochs, epochs)
     criterion = NoiseWeightedL1Loss(epsilon=0.01)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
     writer = SummaryWriter(log_dir=str(output_dir / "runs"))
 
     start_epoch = 0
@@ -202,7 +224,7 @@ def train(
                 sigma_ref = sigma_map
 
             optimizer.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp and device.type == "cuda"):
+            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
                 output = model(noisy)
                 loss = criterion(output, clean_ref, sigma_ref)
 
@@ -279,7 +301,7 @@ def _validate(
                 noisy, clean, _ = batch
                 clean_ref = clean.to(device)
             noisy = noisy.to(device)
-            with torch.cuda.amp.autocast(enabled=use_amp and device.type == "cuda"):
+            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
                 output = model(noisy)
             total_psnr += psnr(output, clean_ref)
     return total_psnr / max(1, len(loader))
@@ -291,12 +313,28 @@ def _validate(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train NEFResidual or NEFTemporal.")
+    parser = argparse.ArgumentParser(
+        description="Train NEFResidual or NEFTemporal.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--model", choices=["residual", "temporal"], default="residual")
     parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
-    parser.add_argument("--data", required=True, nargs="+", metavar="DIR",
-                        help="Directory(ies) of clean training images.")
+    # Synthetic (clean-only) data
+    parser.add_argument("--data", nargs="+", default=None, metavar="DIR",
+                        help="Directory(ies) of clean images for synthetic noise training.")
     parser.add_argument("--val-data", nargs="+", default=None, metavar="DIR")
+    # Paired (real clean/noisy) data
+    parser.add_argument("--paired-clean", nargs="+", default=None, metavar="DIR",
+                        help="Directory(ies) of clean ground-truth images for paired training.")
+    parser.add_argument("--paired-noisy", nargs="+", default=None, metavar="DIR",
+                        help="Matching directory(ies) of real noisy images.  "
+                             "Must have same number of entries as --paired-clean.")
+    parser.add_argument("--paired-weight", type=float, default=0.5,
+                        help="Fraction of each batch drawn from paired data when both "
+                             "--data and --paired-clean are supplied (default: 0.5).")
+    parser.add_argument("--no-name-match", action="store_true",
+                        help="Match paired images by sorted position rather than filename stem.")
+    # Common training args
     parser.add_argument("--output", default="checkpoints/run", metavar="DIR")
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -306,40 +344,96 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--no-amp", action="store_true", help="Disable AMP.")
     parser.add_argument("--resume", default=None, metavar="PATH")
-    # Noise options
+    # Synthetic noise options
     parser.add_argument("--patch-pool", default=None, metavar="PATH",
                         help="Path to real noise patch pool (.npz).")
     parser.add_argument("--noise-profile", default=None, metavar="PATH",
                         help="Path to calibrated noise profile (.json).")
     args = parser.parse_args()
 
+    has_synthetic = args.data is not None
+    has_paired    = args.paired_clean is not None and args.paired_noisy is not None
+
+    if not has_synthetic and not has_paired:
+        parser.error("Provide --data for synthetic training, --paired-clean/--paired-noisy "
+                     "for paired training, or both for mixed training.")
+
     cfg_map = {"lite": ModelConfig.lite, "standard": ModelConfig.standard, "heavy": ModelConfig.heavy}
     config = cfg_map[args.size]()
+    match_by_name = not args.no_name_match
 
     noise_gen = MixedNoiseGenerator.default(
         patch_pool=args.patch_pool, profile_json=args.noise_profile
     )
 
-    if args.model == "temporal":
-        train_ds = VideoSequenceDataset(
-            args.data, noise_generator=noise_gen,
-            num_frames=config.num_frames, patch_size=64,
-        )
-        val_ds = (
-            VideoSequenceDataset(args.val_data, num_frames=config.num_frames, patch_size=64)
-            if args.val_data else None
-        )
-        model = NEFTemporal(config)
-    else:
-        train_ds = PatchDataset(
-            args.data, noise_generator=noise_gen,
+    is_temporal = args.model == "temporal"
+
+    # ------------------------------------------------------------------
+    # Build training dataset
+    # ------------------------------------------------------------------
+    def _make_synthetic_ds(dirs: list[str]) -> Dataset:
+        if is_temporal:
+            return VideoSequenceDataset(
+                dirs, noise_generator=noise_gen,
+                num_frames=config.num_frames, patch_size=64,
+            )
+        return PatchDataset(
+            dirs, noise_generator=noise_gen,
             patch_size=args.patch_size, patches_per_image=args.patches_per_image,
         )
-        val_ds = (
-            PatchDataset(args.val_data, patch_size=args.patch_size)
-            if args.val_data else None
+
+    def _make_paired_ds(clean_dirs: list[str], noisy_dirs: list[str]) -> Dataset:
+        if len(clean_dirs) != len(noisy_dirs):
+            parser.error("--paired-clean and --paired-noisy must have the same number of entries.")
+        if is_temporal:
+            return PairedVideoSequenceDataset(
+                clean_dirs, noisy_dirs,
+                num_frames=config.num_frames, patch_size=64,
+            )
+        # For spatial: pair each clean/noisy dir entry
+        if len(clean_dirs) == 1:
+            return PairedPatchDataset(
+                clean_dirs[0], noisy_dirs[0],
+                patch_size=args.patch_size,
+                patches_per_image=args.patches_per_image,
+                match_by_name=match_by_name,
+            )
+        # Multiple paired dirs → combine
+        sub_datasets = [
+            PairedPatchDataset(
+                c, n,
+                patch_size=args.patch_size,
+                patches_per_image=args.patches_per_image,
+                match_by_name=match_by_name,
+            )
+            for c, n in zip(clean_dirs, noisy_dirs)
+        ]
+        return CombinedDataset(sub_datasets)
+
+    if has_synthetic and has_paired:
+        syn_ds    = _make_synthetic_ds(args.data)
+        paired_ds = _make_paired_ds(args.paired_clean, args.paired_noisy)
+        pw = max(0.0, min(1.0, args.paired_weight))
+        train_ds: Dataset = CombinedDataset(
+            datasets=[syn_ds, paired_ds],
+            weights=[1.0 - pw, pw],
         )
-        model = NEFResidual(config)
+        print(f"Mixed training: {(1-pw)*100:.0f}% synthetic + {pw*100:.0f}% paired")
+    elif has_paired:
+        train_ds = _make_paired_ds(args.paired_clean, args.paired_noisy)
+        print("Paired training only (no synthetic noise generation)")
+    else:
+        train_ds = _make_synthetic_ds(args.data)
+        print("Synthetic training only (no paired data)")
+
+    # ------------------------------------------------------------------
+    # Build validation dataset (synthetic only — ground truth is clean)
+    # ------------------------------------------------------------------
+    val_ds: Optional[Dataset] = None
+    if args.val_data:
+        val_ds = _make_synthetic_ds(args.val_data)
+
+    model_instance = NEFTemporal(config) if is_temporal else NEFResidual(config)
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
@@ -351,7 +445,7 @@ def main() -> None:
     )
 
     train(
-        model=model,
+        model=model_instance,
         loader=train_loader,
         val_loader=val_loader,
         output_dir=Path(args.output),

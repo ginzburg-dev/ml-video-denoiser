@@ -15,6 +15,7 @@ dependencies = [
     "numpy",
     "tqdm",
     "tensorboard",
+    "matplotlib>=3.10.8",
 ]
 
 [dependency-groups]

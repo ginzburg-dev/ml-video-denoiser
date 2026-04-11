@@ -36,6 +36,49 @@ ml-video-denoiser/
 
 ---
 
+## Quick start (no external data)
+
+The fastest way to verify everything works after a fresh clone — no dataset download required.
+
+```bash
+# 1. Clone with submodules
+git clone --recurse-submodules <repo>
+cd ml-video-denoiser
+
+# 2. Python environment
+cd training && uv sync && cd ..
+
+# 3. C++ engine (adjust CUDA arch for your GPU)
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="86"
+cmake --build build -j$(nproc)
+
+# 4. Generate test fixtures (tiny exported model + parity inputs)
+cd training && uv run python ../tests/gen_fixtures.py && cd ..
+
+# 5. Run the full test suite — 30+ tests, no GPU dataset needed
+cd training && uv run pytest ../tests/test_integration.py -v
+```
+
+What the suite covers without any external data:
+
+| Group | What it tests |
+|---|---|
+| `TestExportRoundtrip` | export.py produces correct manifest + .bin files |
+| `TestNEFResidualPython` | Python model output shape, clamping, padding |
+| `TestCppGtests` | All C++ unit tests (tensor, weight loader, conv, BN, UNet parity) |
+| `TestPythonCppParity` | Python ↔ C++ pixel-level agreement |
+| `TestCLI` | CLI binary: single image, directory, error handling |
+| `TestTrainingSmokeTest` | 2-epoch train on bundled 128×128 PNGs — loss decreases, checkpoint saves, resume works |
+| `TestPSNRRegression` | Random-init model produces no NaN/Inf *(PSNR threshold skipped until trained checkpoint exists)* |
+
+The `TestTrainingSmokeTest` uses five synthetic PNG images committed to
+`tests/fixtures/sample_images/` — generated once by `tests/gen_sample_images.py`.
+They cover horizontal/vertical gradients, a checkerboard, colour patches, and a
+sinusoidal texture, giving the training pipeline diverse spatial frequencies to
+exercise on.
+
+---
+
 ## Requirements
 
 | Tool | Version |
@@ -102,6 +145,14 @@ cd training && uv run python ../tests/gen_fixtures.py && cd ..
 ```bash
 cd training
 uv run pytest ../tests/test_integration.py -v
+```
+
+The `TestTrainingSmokeTest` suite needs the bundled sample images.  They are
+already committed to `tests/fixtures/sample_images/`, but if you need to
+regenerate them:
+
+```bash
+cd training && uv run python ../tests/gen_sample_images.py
 ```
 
 ---

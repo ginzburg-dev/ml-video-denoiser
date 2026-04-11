@@ -9,6 +9,8 @@ Prerequisites:
        cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
   2. Generate fixtures:
        cd training && uv run python ../tests/gen_fixtures.py
+  3. Generate sample images (one-time, already committed):
+       cd training && uv run python ../tests/gen_sample_images.py
 
 Run with:
     cd training && uv run pytest ../tests/test_integration.py -v
@@ -463,7 +465,180 @@ class TestCLI:
 
 
 # ---------------------------------------------------------------------------
-# 6. PSNR regression check (Python model)
+# 6. Training smoke test (bundled sample images, no external data needed)
+# ---------------------------------------------------------------------------
+
+SAMPLE_IMAGES_DIR = REPO_ROOT / "tests" / "fixtures" / "sample_images"
+
+
+def _sample_images_available() -> bool:
+    return SAMPLE_IMAGES_DIR.is_dir() and len(list(SAMPLE_IMAGES_DIR.glob("*.png"))) >= 4
+
+
+skip_no_samples = pytest.mark.skipif(
+    not _sample_images_available(),
+    reason=(
+        "Sample images not found — run: "
+        "cd training && uv run python ../tests/gen_sample_images.py"
+    ),
+)
+
+
+class TestTrainingSmokeTest:
+    """2-epoch smoke test verifying the training pipeline end-to-end.
+
+    Uses the five synthetic 128×128 PNGs committed in
+    tests/fixtures/sample_images/.  No external dataset required.
+    Runs entirely on CPU in < 30 s with the tiny enc_channels=[8, 16] model.
+    """
+
+    def _make_loader(self):
+        from torch.utils.data import DataLoader
+        from dataset import PatchDataset
+        from noise_generators import GaussianNoiseGenerator
+
+        noise_gen = GaussianNoiseGenerator(sigma_min=10.0 / 255.0, sigma_max=50.0 / 255.0)
+        dataset = PatchDataset(
+            image_dirs=[SAMPLE_IMAGES_DIR],
+            noise_generator=noise_gen,
+            patch_size=64,
+            patches_per_image=8,
+        )
+        return DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0)
+
+    def _make_model(self, seed: int = 42):
+        from models import ModelConfig
+        torch.manual_seed(seed)
+        return NEFResidual(ModelConfig(enc_channels=[8, 16]))
+
+    @skip_no_samples
+    def test_sample_images_are_valid_rgb(self):
+        """Each sample image must be 128×128 RGB with values in [0, 255]."""
+        from PIL import Image
+        for img_path in sorted(SAMPLE_IMAGES_DIR.glob("*.png")):
+            img = Image.open(img_path)
+            assert img.mode == "RGB", f"{img_path.name}: expected RGB, got {img.mode}"
+            assert img.size == (128, 128), (
+                f"{img_path.name}: expected 128×128, got {img.size}"
+            )
+
+    @skip_no_samples
+    def test_training_completes_2_epochs(self, tmp_path: Path):
+        """Training loop must complete without error and write final.pth."""
+        from training import train
+
+        train(
+            model=self._make_model(),
+            loader=self._make_loader(),
+            val_loader=None,
+            output_dir=tmp_path,
+            epochs=2,
+            warmup_epochs=0,
+            checkpoint_every=100,   # no periodic checkpoints during the test
+            use_amp=False,          # CPU-compatible
+        )
+
+        assert (tmp_path / "final.pth").exists(), "final.pth not written after training"
+        ckpt = torch.load(tmp_path / "final.pth", map_location="cpu")
+        assert "model_state_dict" in ckpt
+        assert "optimizer_state_dict" in ckpt
+        # 0-indexed: last epoch stored should be 1 (the 2nd epoch)
+        assert ckpt["epoch"] == 1, f"Expected epoch=1, got {ckpt['epoch']}"
+
+    @skip_no_samples
+    def test_loss_decreases_over_2_epochs(self, tmp_path: Path):
+        """Loss at epoch 2 must be strictly lower than at epoch 1."""
+        from training import train
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            train(
+                model=self._make_model(seed=0),
+                loader=self._make_loader(),
+                val_loader=None,
+                output_dir=tmp_path,
+                epochs=2,
+                warmup_epochs=0,
+                checkpoint_every=100,
+                use_amp=False,
+            )
+        log = buf.getvalue()
+
+        # Parse the two "loss=..." lines printed by the training loop
+        import re
+        losses = [float(m) for m in re.findall(r"loss=([0-9.]+)", log)]
+        assert len(losses) == 2, f"Expected 2 loss entries in log, got: {log!r}"
+        assert losses[1] < losses[0], (
+            f"Loss did not decrease: epoch1={losses[0]:.6f}, epoch2={losses[1]:.6f}"
+        )
+
+    @skip_no_samples
+    def test_model_outputs_valid_after_training(self, tmp_path: Path):
+        """After training, the model must produce finite outputs clamped to [0, 1]."""
+        from training import train
+
+        model = self._make_model(seed=99)
+        train(
+            model=model,
+            loader=self._make_loader(),
+            val_loader=None,
+            output_dir=tmp_path,
+            epochs=2,
+            warmup_epochs=0,
+            checkpoint_every=100,
+            use_amp=False,
+        )
+
+        model.eval()
+        x = torch.rand(1, 3, 64, 64)
+        with torch.no_grad():
+            y = model(x)
+
+        assert not torch.isnan(y).any(),  "Output contains NaN after training"
+        assert not torch.isinf(y).any(),  "Output contains Inf after training"
+        assert y.min().item() >= 0.0,     f"Output below 0: {y.min().item():.4f}"
+        assert y.max().item() <= 1.0,     f"Output above 1: {y.max().item():.4f}"
+
+    @skip_no_samples
+    def test_checkpoint_resumes_cleanly(self, tmp_path: Path):
+        """A checkpoint saved at epoch 1 must resume to epoch 2 without error."""
+        from training import train
+
+        # First run: 1 epoch, save epoch_0001.pth via checkpoint_every=1
+        model = self._make_model(seed=5)
+        train(
+            model=model,
+            loader=self._make_loader(),
+            val_loader=None,
+            output_dir=tmp_path / "run",
+            epochs=1,
+            warmup_epochs=0,
+            checkpoint_every=1,
+            use_amp=False,
+        )
+        first_ckpt = tmp_path / "run" / "epoch_0001.pth"
+        assert first_ckpt.exists(), "epoch_0001.pth not written"
+
+        # Resume: 1 more epoch from the saved checkpoint
+        model2 = self._make_model(seed=5)
+        train(
+            model=model2,
+            loader=self._make_loader(),
+            val_loader=None,
+            output_dir=tmp_path / "resume",
+            epochs=2,
+            warmup_epochs=0,
+            checkpoint_every=100,
+            use_amp=False,
+            resume=first_ckpt,
+        )
+        assert (tmp_path / "resume" / "final.pth").exists()
+
+
+# ---------------------------------------------------------------------------
+# 7. PSNR regression check (Python model)
 # ---------------------------------------------------------------------------
 
 class TestPSNRRegression:
