@@ -66,8 +66,12 @@ def export_model(
 
     layers = []
     for name, param in state_dict.items():
-        # BN statistics → always float32 for numerical precision
-        force_fp32 = any(
+        # All BN parameters → always float32.
+        # The C++ BatchNorm2dLayer applies scale/shift in FP32 internally and
+        # checks dtype == kFloat32 for all four BN tensors (weight, bias,
+        # running_mean, running_var).  num_batches_tracked is a scalar counter
+        # that is never uploaded to the GPU but exported for completeness.
+        force_fp32 = ".bn." in name or any(
             name.endswith(suffix)
             for suffix in ("running_mean", "running_var", "num_batches_tracked")
         )
