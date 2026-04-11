@@ -143,6 +143,14 @@ def _load_checkpoint(
     return ckpt["epoch"], ckpt["best_psnr"]
 
 
+def _module_device(module: nn.Module) -> torch.device:
+    """Return the device of the first parameter/buffer, defaulting to CPU."""
+    tensor = next(module.parameters(), None)
+    if tensor is None:
+        tensor = next(module.buffers(), None)
+    return tensor.device if tensor is not None else torch.device("cpu")
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -182,6 +190,7 @@ def train(
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    original_device = _module_device(model)
     model = model.to(device)
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -190,96 +199,102 @@ def train(
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
     writer = SummaryWriter(log_dir=str(output_dir / "runs"))
 
-    start_epoch = 0
-    best_psnr = 0.0
+    try:
+        start_epoch = 0
+        best_psnr = 0.0
 
-    if resume is not None and resume.exists():
-        start_epoch, best_psnr = _load_checkpoint(resume, model, optimizer, scheduler, device)
-        print(f"Resumed from {resume} at epoch {start_epoch}.")
+        if resume is not None and resume.exists():
+            start_epoch, best_psnr = _load_checkpoint(
+                resume, model, optimizer, scheduler, device
+            )
+            print(f"Resumed from {resume} at epoch {start_epoch}.")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    is_temporal = hasattr(model, "_num_frames")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        is_temporal = hasattr(model, "_num_frames")
 
-    for epoch in range(start_epoch, epochs):
-        model.train()
-        epoch_loss = 0.0
-        epoch_psnr = 0.0
-        t0 = time.perf_counter()
+        for epoch in range(start_epoch, epochs):
+            model.train()
+            epoch_loss = 0.0
+            epoch_psnr = 0.0
+            t0 = time.perf_counter()
 
-        for step, batch in enumerate(loader):
-            if is_temporal:
-                noisy, clean, sigma_map = batch        # (B, T, C, H, W) each
-                noisy = noisy.to(device)
-                clean = clean.to(device)
-                sigma_map = sigma_map.to(device)
-                ref_idx = model._ref_idx
-                clean_ref = clean[:, ref_idx]          # (B, C, H, W) — reference frame
-                sigma_ref = sigma_map[:, ref_idx]
-            else:
-                noisy, clean, sigma_map = batch        # (B, C, H, W) each
-                noisy = noisy.to(device)
-                clean = clean.to(device)
-                sigma_map = sigma_map.to(device)
-                clean_ref = clean
-                sigma_ref = sigma_map
+            for step, batch in enumerate(loader):
+                if is_temporal:
+                    noisy, clean, sigma_map = batch        # (B, T, C, H, W) each
+                    noisy = noisy.to(device)
+                    clean = clean.to(device)
+                    sigma_map = sigma_map.to(device)
+                    ref_idx = model._ref_idx
+                    clean_ref = clean[:, ref_idx]          # (B, C, H, W) — reference frame
+                    sigma_ref = sigma_map[:, ref_idx]
+                else:
+                    noisy, clean, sigma_map = batch        # (B, C, H, W) each
+                    noisy = noisy.to(device)
+                    clean = clean.to(device)
+                    sigma_map = sigma_map.to(device)
+                    clean_ref = clean
+                    sigma_ref = sigma_map
 
-            optimizer.zero_grad()
-            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
-                output = model(noisy)
-                loss = criterion(output, clean_ref, sigma_ref)
+                optimizer.zero_grad()
+                with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
+                    output = model(noisy)
+                    loss = criterion(output, clean_ref, sigma_ref)
 
-            scaler.scale(loss).backward()
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
+                scaler.scale(loss).backward()
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
 
-            epoch_loss += loss.item()
-            with torch.no_grad():
-                epoch_psnr += psnr(output, clean_ref)
+                epoch_loss += loss.item()
+                with torch.no_grad():
+                    epoch_psnr += psnr(output, clean_ref)
 
-        scheduler.step()
-        n_steps = len(loader)
-        avg_loss = epoch_loss / n_steps
-        avg_psnr = epoch_psnr / n_steps
-        elapsed = time.perf_counter() - t0
-        current_lr = scheduler.get_last_lr()[0]
+            scheduler.step()
+            n_steps = len(loader)
+            avg_loss = epoch_loss / n_steps
+            avg_psnr = epoch_psnr / n_steps
+            elapsed = time.perf_counter() - t0
+            current_lr = scheduler.get_last_lr()[0]
 
-        writer.add_scalar("train/loss", avg_loss, epoch)
-        writer.add_scalar("train/psnr", avg_psnr, epoch)
-        writer.add_scalar("train/lr", current_lr, epoch)
+            writer.add_scalar("train/loss", avg_loss, epoch)
+            writer.add_scalar("train/psnr", avg_psnr, epoch)
+            writer.add_scalar("train/lr", current_lr, epoch)
 
-        print(
-            f"Epoch {epoch + 1:4d}/{epochs}  "
-            f"loss={avg_loss:.6f}  psnr={avg_psnr:.2f}dB  "
-            f"lr={current_lr:.2e}  t={elapsed:.1f}s"
-        )
-
-        # Validation
-        if val_loader is not None:
-            val_psnr = _validate(model, val_loader, device, is_temporal, use_amp)
-            writer.add_scalar("val/psnr", val_psnr, epoch)
-            print(f"  val psnr={val_psnr:.2f}dB")
-            if val_psnr > best_psnr:
-                best_psnr = val_psnr
-                _save_checkpoint(
-                    output_dir / "best.pth", model, optimizer, scheduler, epoch, best_psnr
-                )
-
-        # Periodic checkpoint
-        if (epoch + 1) % checkpoint_every == 0:
-            _save_checkpoint(
-                output_dir / f"epoch_{epoch + 1:04d}.pth",
-                model, optimizer, scheduler, epoch, best_psnr,
+            print(
+                f"Epoch {epoch + 1:4d}/{epochs}  "
+                f"loss={avg_loss:.6f}  psnr={avg_psnr:.2f}dB  "
+                f"lr={current_lr:.2e}  t={elapsed:.1f}s"
             )
 
-    # Final checkpoint
-    _save_checkpoint(
-        output_dir / "final.pth", model, optimizer, scheduler, epochs - 1, best_psnr
-    )
-    writer.close()
-    print(f"Training complete.  Best val PSNR: {best_psnr:.2f} dB")
+            # Validation
+            if val_loader is not None:
+                val_psnr = _validate(model, val_loader, device, is_temporal, use_amp)
+                writer.add_scalar("val/psnr", val_psnr, epoch)
+                print(f"  val psnr={val_psnr:.2f}dB")
+                if val_psnr > best_psnr:
+                    best_psnr = val_psnr
+                    _save_checkpoint(
+                        output_dir / "best.pth", model, optimizer, scheduler, epoch, best_psnr
+                    )
+
+            # Periodic checkpoint
+            if (epoch + 1) % checkpoint_every == 0:
+                _save_checkpoint(
+                    output_dir / f"epoch_{epoch + 1:04d}.pth",
+                    model, optimizer, scheduler, epoch, best_psnr,
+                )
+
+        # Final checkpoint
+        _save_checkpoint(
+            output_dir / "final.pth", model, optimizer, scheduler, epochs - 1, best_psnr
+        )
+        print(f"Training complete.  Best val PSNR: {best_psnr:.2f} dB")
+    finally:
+        writer.close()
+        if _module_device(model) != original_device:
+            model.to(original_device)
 
 
 def _validate(
