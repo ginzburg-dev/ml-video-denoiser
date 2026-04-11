@@ -108,6 +108,7 @@ cd ml-video-denoiser
 cd training
 uv sync                    # installs all deps from uv.lock
 uv run pytest tests/ -v    # 88 tests — should all pass
+cd ..
 ```
 
 ### 3. C++ engine
@@ -164,7 +165,7 @@ cd training && uv run python ../tests/gen_sample_images.py
 ```bash
 cd training
 uv run python training.py \
-    --data-dir /path/to/clean/images \
+    --data /path/to/clean/images \
     --noise gaussian \
     --size standard \
     --epochs 300
@@ -174,7 +175,7 @@ uv run python training.py \
 
 ```bash
 uv run python training.py \
-    --data-dir /path/to/clean/images \
+    --data /path/to/clean/images \
     --noise mixed \
     --patch-pool pools/camera_iso1600.npz \
     --noise-profile profiles/camera_iso1600.json

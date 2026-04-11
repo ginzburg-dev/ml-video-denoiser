@@ -54,7 +54,11 @@ from dataset import (
 )
 from losses import NoiseWeightedL1Loss
 from models import ModelConfig, NEFResidual, NEFTemporal
-from noise_generators import MixedNoiseGenerator
+from noise_generators import (
+    GaussianNoiseGenerator,
+    MixedNoiseGenerator,
+    PoissonGaussianNoiseGenerator,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -327,10 +331,16 @@ def _validate(
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the training CLI parser.
+
+    Long-option abbreviation is disabled so flags like ``--noise`` cannot be
+    silently interpreted as ``--noise-profile``.
+    """
     parser = argparse.ArgumentParser(
         description="Train NEFResidual or NEFTemporal.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument("--model", choices=["residual", "temporal"], default="residual")
     parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
@@ -360,10 +370,41 @@ def main() -> None:
     parser.add_argument("--no-amp", action="store_true", help="Disable AMP.")
     parser.add_argument("--resume", default=None, metavar="PATH")
     # Synthetic noise options
+    parser.add_argument(
+        "--noise",
+        choices=["gaussian", "poisson-gaussian", "mixed"],
+        default="mixed",
+        help="Synthetic noise model to use for clean-only training data.",
+    )
     parser.add_argument("--patch-pool", default=None, metavar="PATH",
                         help="Path to real noise patch pool (.npz).")
     parser.add_argument("--noise-profile", default=None, metavar="PATH",
                         help="Path to calibrated noise profile (.json).")
+    return parser
+
+
+def _make_noise_generator(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+):
+    """Construct the configured synthetic noise generator."""
+    if args.noise == "gaussian":
+        if args.patch_pool or args.noise_profile:
+            parser.error("--patch-pool and --noise-profile require --noise mixed.")
+        return GaussianNoiseGenerator(0.0, 75.0 / 255.0)
+
+    if args.noise == "poisson-gaussian":
+        if args.patch_pool or args.noise_profile:
+            parser.error("--patch-pool and --noise-profile require --noise mixed.")
+        return PoissonGaussianNoiseGenerator()
+
+    return MixedNoiseGenerator.default(
+        patch_pool=args.patch_pool, profile_json=args.noise_profile
+    )
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     has_synthetic = args.data is not None
@@ -377,9 +418,7 @@ def main() -> None:
     config = cfg_map[args.size]()
     match_by_name = not args.no_name_match
 
-    noise_gen = MixedNoiseGenerator.default(
-        patch_pool=args.patch_pool, profile_json=args.noise_profile
-    )
+    noise_gen = _make_noise_generator(args, parser)
 
     is_temporal = args.model == "temporal"
 
