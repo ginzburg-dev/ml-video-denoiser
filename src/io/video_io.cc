@@ -1,5 +1,6 @@
 #include "denoiser/io/video_io.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <filesystem>

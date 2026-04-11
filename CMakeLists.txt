@@ -34,17 +34,25 @@ endif()
 # Dependencies
 # ---------------------------------------------------------------------------
 find_package(CUDAToolkit REQUIRED)
+find_package(ZLIB REQUIRED)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(CUDNN REQUIRED)
 
-if(CUDNN_VERSION VERSION_LESS "8.5")
-    message(WARNING
-        "cuDNN ${CUDNN_VERSION} detected — cudnnResampleForward requires >= 8.5. "
-        "Falling back to custom bilinear upsample kernel.")
-    set(USE_CUDNN_RESAMPLE OFF)
-else()
+# cudnnResampleForward was available in cuDNN 8.5–8.x but removed in cuDNN 9.
+if(CUDNN_VERSION VERSION_GREATER_EQUAL "8.5" AND CUDNN_VERSION VERSION_LESS "9.0")
     set(USE_CUDNN_RESAMPLE ON)
+else()
+    if(CUDNN_VERSION VERSION_LESS "8.5")
+        message(STATUS
+            "cuDNN ${CUDNN_VERSION} < 8.5 — cudnnResampleForward unavailable. "
+            "Using custom bilinear upsample kernel.")
+    else()
+        message(STATUS
+            "cuDNN ${CUDNN_VERSION} >= 9.0 — cudnnResampleForward was removed. "
+            "Using custom bilinear upsample kernel.")
+    endif()
+    set(USE_CUDNN_RESAMPLE OFF)
 endif()
 
 # Optional: LibRaw for reading camera RAW files in the CLI
@@ -98,6 +106,7 @@ target_link_libraries(denoiser_engine PUBLIC
     CUDA::cudart
     CUDA::cublas
     CUDNN::cudnn
+    ZLIB::ZLIB
     nlohmann_json::nlohmann_json
     stb
     tinyexr

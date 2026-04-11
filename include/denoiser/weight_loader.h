@@ -96,6 +96,7 @@ private:
 
     void parse_manifest(const std::string& path);
     const Tensor& upload(const std::string& name) const;
+    static MappedFile mmap_file(const std::string& path);
 };
 
 } // namespace denoiser

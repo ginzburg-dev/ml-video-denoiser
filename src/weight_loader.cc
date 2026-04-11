@@ -29,7 +29,7 @@ static DType dtype_from_string(const std::string& s) {
 }
 
 // Memory-map a file for read-only access.
-static WeightStore::MappedFile mmap_file(const std::string& path) {
+WeightStore::MappedFile WeightStore::mmap_file(const std::string& path) {
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd == -1) {
         throw std::runtime_error("Cannot open weight file: " + path +

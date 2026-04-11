@@ -1,4 +1,7 @@
 #define TINYEXR_IMPLEMENTATION
+// Use system zlib rather than the bundled miniz — avoids the need for miniz.h
+// to be on the include path separately.
+#define TINYEXR_USE_MINIZ 0
 
 #include "denoiser/io/exr_io.h"
 #include "denoiser/tensor.h"

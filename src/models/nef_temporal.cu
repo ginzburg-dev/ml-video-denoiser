@@ -237,7 +237,7 @@ std::pair<Tensor, PaddingInfo> pad_to_multiple(
     kernels::launch_reflect_pad(
         input.data_f16(), padded.data_f16(),
         N, C, H_in, W_in, H_in + pad_h, W_in + pad_w, stream);
-    return {std::move(padded), {pad_h, pad_w}};
+    return std::make_pair(std::move(padded), PaddingInfo{pad_h, pad_w});
 }
 
 Tensor crop_to_original(

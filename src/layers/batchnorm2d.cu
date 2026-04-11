@@ -1,5 +1,6 @@
 #include "denoiser/layers/batchnorm2d.h"
-#include "../../src/kernels/bn_inference.cuh"
+#include "../kernels/bn_inference.cuh"
+#include "../kernels/concat.cuh"
 
 #include <cmath>
 #include <stdexcept>

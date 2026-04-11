@@ -202,7 +202,7 @@ std::pair<Tensor, PaddingInfo> pad_to_multiple(
         input.data_f16(), padded.data_f16(),
         N, C, H_in, W_in, H_out, W_out, stream);
 
-    return {std::move(padded), {pad_h, pad_w}};
+    return std::make_pair(std::move(padded), PaddingInfo{pad_h, pad_w});
 }
 
 // Strip the padding added by pad_to_multiple, restoring the original shape.
