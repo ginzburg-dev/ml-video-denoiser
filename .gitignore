@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.env
+dist/
+build/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# uv
+training/.python-version
+
+# ML artifacts
+weights/
+data/
+*.pth
+*.pt
+*.onnx
+*.bin
+*.npz
+runs/
+checkpoints/
+*.log
+tensorboard_logs/
+
+# Camera noise profiles (user-specific)
+profiles/
+pools/
+
+# C++ build
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+compile_commands.json
+.cmake/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs build
+docs/_build/
