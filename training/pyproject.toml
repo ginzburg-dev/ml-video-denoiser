@@ -35,7 +35,8 @@ profile = "google"
 line_length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# "tests" = training unit tests  |  "../tests" = integration tests
+testpaths = ["tests", "../tests"]
 addopts = "-v --tb=short"
 
 [tool.pylint.format]

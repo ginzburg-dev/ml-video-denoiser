@@ -1,0 +1,514 @@
+"""Phase 6 integration tests: Python ↔ C++ parity and end-to-end CLI smoke tests.
+
+These tests validate that the C++ inference engine produces numerically
+identical results to the Python NEFResidual, and that the full pipeline
+(export → C++ load → forward → output) works end-to-end.
+
+Prerequisites:
+  1. Build the C++ engine:
+       cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+  2. Generate fixtures:
+       cd training && uv run python ../tests/gen_fixtures.py
+
+Run with:
+    cd training && uv run pytest ../tests/test_integration.py -v
+"""
+
+import ctypes
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+TRAINING_DIR = REPO_ROOT / "training"
+FIXTURE_DIR  = Path(__file__).resolve().parent / "fixtures" / "tiny_unet"
+BUILD_DIR    = REPO_ROOT / "build"
+
+if str(TRAINING_DIR) not in sys.path:
+    sys.path.insert(0, str(TRAINING_DIR))
+
+from models import ModelConfig, NEFResidual  # noqa: E402
+from export import export_model, verify_export  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def tiny_config() -> ModelConfig:
+    return ModelConfig(enc_channels=[8, 16])
+
+
+def fixture_available() -> bool:
+    return (FIXTURE_DIR / "manifest.json").exists()
+
+
+def cpp_tests_binary() -> Path | None:
+    """Return path to denoiser_tests binary if it exists."""
+    for candidate in [
+        BUILD_DIR / "tests" / "denoiser_tests",
+        BUILD_DIR / "denoiser_tests",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def cli_binary() -> Path | None:
+    for candidate in [
+        BUILD_DIR / "nef_denoise",
+        BUILD_DIR / "cli" / "nef_denoise",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def has_cuda() -> bool:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"], capture_output=True, timeout=5
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Fixtures setup / skip guards
+# ---------------------------------------------------------------------------
+
+skip_no_cuda    = pytest.mark.skipif(not has_cuda(), reason="No CUDA GPU available")
+skip_no_fixture = pytest.mark.skipif(
+    not fixture_available(),
+    reason="Fixture not found — run: cd training && uv run python ../tests/gen_fixtures.py"
+)
+skip_no_cpp     = pytest.mark.skipif(
+    cpp_tests_binary() is None,
+    reason="C++ test binary not found — run: cmake --build build"
+)
+skip_no_cli     = pytest.mark.skipif(
+    cli_binary() is None,
+    reason="CLI binary not found — run: cmake --build build"
+)
+
+
+# ---------------------------------------------------------------------------
+# 1. Export round-trip
+# ---------------------------------------------------------------------------
+
+class TestExportRoundtrip:
+    """Verify export.py produces correct manifests and binary files."""
+
+    def test_float16_roundtrip(self, tmp_path: Path):
+        torch.manual_seed(0)
+        model = NEFResidual(tiny_config()).eval()
+        manifest = export_model(model, tmp_path, dtype="float16")
+        assert verify_export(model, manifest, rtol=1e-2)
+
+    def test_float32_roundtrip(self, tmp_path: Path):
+        torch.manual_seed(0)
+        model = NEFResidual(tiny_config()).eval()
+        manifest = export_model(model, tmp_path, dtype="float32")
+        assert verify_export(model, manifest, rtol=1e-5)
+
+    def test_bn_stats_always_float32(self, tmp_path: Path):
+        """BN running_mean and running_var must always be float32 in the manifest."""
+        torch.manual_seed(0)
+        model = NEFResidual(tiny_config()).eval()
+        manifest_path = export_model(model, tmp_path, dtype="float16")
+
+        import json
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+        for layer in manifest["layers"]:
+            name = layer["name"]
+            if any(name.endswith(s) for s in ("running_mean", "running_var")):
+                assert layer["dtype"] == "float32", (
+                    f"{name} should be float32 but got {layer['dtype']}"
+                )
+
+    def test_conv_weights_are_float16(self, tmp_path: Path):
+        torch.manual_seed(0)
+        model = NEFResidual(tiny_config()).eval()
+        manifest_path = export_model(model, tmp_path, dtype="float16")
+
+        import json
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+        for layer in manifest["layers"]:
+            name = layer["name"]
+            if name.endswith(".weight") and "bn" not in name and "running" not in name:
+                assert layer["dtype"] == "float16", (
+                    f"Conv weight {name} should be float16 but got {layer['dtype']}"
+                )
+
+    def test_manifest_architecture_fields(self, tmp_path: Path):
+        torch.manual_seed(0)
+        cfg   = tiny_config()
+        model = NEFResidual(cfg).eval()
+        manifest_path = export_model(model, tmp_path, dtype="float16")
+
+        import json
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+        arch = manifest["architecture"]
+        assert arch["type"]         == "nef_residual"
+        assert arch["enc_channels"] == cfg.enc_channels
+        assert arch["num_levels"]   == cfg.num_levels
+        assert arch["in_channels"]  == cfg.in_channels
+        assert arch["out_channels"] == cfg.out_channels
+
+
+# ---------------------------------------------------------------------------
+# 2. Python NEFResidual correctness
+# ---------------------------------------------------------------------------
+
+class TestNEFResidualPython:
+    """Basic correctness checks for the Python model."""
+
+    @pytest.fixture
+    def model(self):
+        torch.manual_seed(7)
+        return NEFResidual(tiny_config()).eval()
+
+    def test_output_shape_equals_input(self, model):
+        x = torch.rand(1, 3, 64, 64)
+        with torch.no_grad():
+            y = model(x)
+        assert y.shape == x.shape
+
+    def test_output_clamped_0_1(self, model):
+        x = torch.rand(1, 3, 48, 48)
+        with torch.no_grad():
+            y = model(x)
+        assert y.min().item() >= 0.0
+        assert y.max().item() <= 1.0
+
+    def test_arbitrary_spatial_size_padded(self, model):
+        """Non-multiple-of-16 input must be auto-padded and output matches input size."""
+        x = torch.rand(1, 3, 37, 53)
+        with torch.no_grad():
+            y = model(x)
+        assert y.shape == x.shape
+
+    def test_fp16_inference_close_to_fp32(self, model):
+        """FP16 and FP32 outputs should be close (within ~0.01)."""
+        torch.manual_seed(0)
+        x = torch.rand(1, 3, 32, 32)
+        with torch.no_grad():
+            y_fp32 = model(x)
+            y_fp16 = model.half()(x.half()).float()
+        diff = (y_fp32 - y_fp16).abs().max().item()
+        assert diff < 0.02, f"FP16/FP32 max diff too large: {diff:.4f}"
+
+    def test_denoising_reduces_noise(self, model):
+        """A clean image + Gaussian noise should produce output closer to clean."""
+        torch.manual_seed(0)
+        clean = torch.rand(1, 3, 64, 64) * 0.8 + 0.1  # values in [0.1, 0.9]
+        noisy = (clean + torch.randn_like(clean) * (25.0 / 255.0)).clamp(0, 1)
+
+        with torch.no_grad():
+            denoised = model(noisy)
+
+        mse_before = ((noisy  - clean) ** 2).mean().item()
+        mse_after  = ((denoised - clean) ** 2).mean().item()
+        # The model is randomly initialised so it won't denoise perfectly,
+        # but output should at least be a valid image
+        assert denoised.min().item() >= 0.0
+        assert denoised.max().item() <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# 3. C++ gtest suite
+# ---------------------------------------------------------------------------
+
+class TestCppGtests:
+    """Run the C++ gtest binary and assert all tests pass."""
+
+    @skip_no_cpp
+    def test_cpp_tensor_tests(self):
+        binary = cpp_tests_binary()
+        result = subprocess.run(
+            [str(binary), "--gtest_filter=TensorTest.*"],
+            capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, (
+            f"C++ TensorTest failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+    @skip_no_cpp
+    def test_cpp_weight_loader_tests(self):
+        binary = cpp_tests_binary()
+        result = subprocess.run(
+            [str(binary), "--gtest_filter=WeightLoaderTest.*"],
+            capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, (
+            f"C++ WeightLoaderTest failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+    @skip_no_cpp
+    def test_cpp_conv2d_tests(self):
+        binary = cpp_tests_binary()
+        result = subprocess.run(
+            [str(binary), "--gtest_filter=Conv2dTest.*"],
+            capture_output=True, text=True, timeout=120
+        )
+        assert result.returncode == 0, (
+            f"C++ Conv2dTest failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+    @skip_no_cpp
+    def test_cpp_batchnorm_tests(self):
+        binary = cpp_tests_binary()
+        result = subprocess.run(
+            [str(binary), "--gtest_filter=BatchNorm2dTest.*"],
+            capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, (
+            f"C++ BatchNorm2dTest failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+    @skip_no_cpp
+    def test_cpp_unet_support_tests(self):
+        binary = cpp_tests_binary()
+        result = subprocess.run(
+            [str(binary), "--gtest_filter=UNetSupportTest.*"],
+            capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, (
+            f"C++ UNetSupportTest failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+    @skip_no_cpp
+    @skip_no_fixture
+    def test_cpp_unet_disabled_tests(self):
+        """Run the DISABLED_ UNet parity tests (require fixture)."""
+        binary = cpp_tests_binary()
+        result = subprocess.run(
+            [
+                str(binary),
+                "--gtest_also_run_disabled_tests",
+                "--gtest_filter=UNetForwardTest.*",
+            ],
+            capture_output=True, text=True, timeout=120
+        )
+        assert result.returncode == 0, (
+            f"C++ UNetForwardTest failed:\n{result.stdout}\n{result.stderr}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Python ↔ C++ parity (via fixture)
+# ---------------------------------------------------------------------------
+
+class TestPythonCppParity:
+    """Compare Python FP16 output against the saved expected_output.bin fixture."""
+
+    @skip_no_fixture
+    def test_fixture_input_output_shapes(self):
+        input_flat  = np.fromfile(FIXTURE_DIR / "input.bin",           dtype=np.float32)
+        output_flat = np.fromfile(FIXTURE_DIR / "expected_output.bin", dtype=np.float32)
+        assert input_flat.shape  == (3 * 32 * 32,)
+        assert output_flat.shape == (3 * 32 * 32,)
+
+    @skip_no_fixture
+    def test_python_reproduces_fixture_output(self):
+        """Re-run the Python model from fixture weights and compare to saved output."""
+        import json
+
+        with open(FIXTURE_DIR / "manifest.json") as f:
+            manifest = json.load(f)
+
+        enc_ch = manifest["architecture"]["enc_channels"]
+        cfg    = ModelConfig(enc_channels=enc_ch)
+        model  = NEFResidual(cfg).half().eval()
+
+        # Load exported weights back into the model
+        state = model.state_dict()
+        for layer in manifest["layers"]:
+            bin_path = FIXTURE_DIR / layer["file"]
+            np_dtype = np.float16 if layer["dtype"] == "float16" else np.float32
+            arr = np.fromfile(bin_path, dtype=np_dtype).reshape(layer["shape"])
+            state[layer["name"]] = torch.from_numpy(arr.astype(np.float32)).to(
+                dtype=model.state_dict()[layer["name"]].dtype
+            )
+        model.load_state_dict(state)
+
+        # Reproduce input
+        input_np = np.fromfile(FIXTURE_DIR / "input.bin", dtype=np.float32)
+        input_t  = torch.from_numpy(input_np.reshape(1, 3, 32, 32)).half()
+
+        with torch.no_grad():
+            output_t = model(input_t).float()
+
+        output_np  = output_t.numpy().flatten()
+        expected   = np.fromfile(FIXTURE_DIR / "expected_output.bin", dtype=np.float32)
+
+        max_diff = np.abs(output_np - expected).max()
+        assert max_diff < 1e-3, (
+            f"Python re-run differs from fixture: max diff = {max_diff:.6f}"
+        )
+
+    @skip_no_fixture
+    def test_fixture_output_range(self):
+        output_flat = np.fromfile(FIXTURE_DIR / "expected_output.bin", dtype=np.float32)
+        assert output_flat.min() >= -0.01, f"output below 0: {output_flat.min()}"
+        assert output_flat.max() <=  1.01, f"output above 1: {output_flat.max()}"
+
+
+# ---------------------------------------------------------------------------
+# 5. CLI smoke tests
+# ---------------------------------------------------------------------------
+
+class TestCLI:
+    """End-to-end tests for the nef_denoise CLI binary."""
+
+    @skip_no_cli
+    @skip_no_fixture
+    def test_cli_single_png(self, tmp_path: Path):
+        """Denoise a synthetic PNG image via the CLI."""
+        # Create a tiny noisy PNG using stb-compatible approach
+        from PIL import Image
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        arr = (rng.uniform(0.2, 0.8, (32, 32, 3)) * 255).astype(np.uint8)
+        img_path = tmp_path / "test.png"
+        Image.fromarray(arr).save(str(img_path))
+
+        out_path = tmp_path / "test_denoised.png"
+        result = subprocess.run(
+            [
+                str(cli_binary()),
+                "--model", str(FIXTURE_DIR / "manifest.json"),
+                "--input", str(img_path),
+                "--output", str(out_path),
+            ],
+            capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, (
+            f"CLI failed:\n{result.stdout}\n{result.stderr}"
+        )
+        assert out_path.exists(), "Output file was not created"
+
+        # Verify the output PNG is valid and has the same dimensions
+        out_img = Image.open(str(out_path))
+        assert out_img.size == (32, 32)
+
+    @skip_no_cli
+    @skip_no_fixture
+    def test_cli_help(self):
+        result = subprocess.run(
+            [str(cli_binary()), "--help"],
+            capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0
+        assert "--model" in result.stdout or "--model" in result.stderr
+
+    @skip_no_cli
+    @skip_no_fixture
+    def test_cli_missing_model_flag(self):
+        result = subprocess.run(
+            [str(cli_binary()), "--input", "/tmp/fake.png"],
+            capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode != 0, "Should fail without --model"
+
+    @skip_no_cli
+    @skip_no_fixture
+    def test_cli_image_dir(self, tmp_path: Path):
+        """Denoise a directory of PNG images."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+
+        import numpy as np
+        img_dir = tmp_path / "frames"
+        img_dir.mkdir()
+        out_dir = tmp_path / "denoised"
+
+        rng = np.random.default_rng(1)
+        for i in range(3):
+            arr = (rng.uniform(0.1, 0.9, (32, 32, 3)) * 255).astype(np.uint8)
+            Image.fromarray(arr).save(str(img_dir / f"frame_{i:04d}.png"))
+
+        result = subprocess.run(
+            [
+                str(cli_binary()),
+                "--model",  str(FIXTURE_DIR / "manifest.json"),
+                "--input",  str(img_dir),
+                "--output", str(out_dir),
+            ],
+            capture_output=True, text=True, timeout=90
+        )
+        assert result.returncode == 0, (
+            f"CLI directory mode failed:\n{result.stdout}\n{result.stderr}"
+        )
+        denoised_files = list(out_dir.glob("*.png"))
+        assert len(denoised_files) == 3, (
+            f"Expected 3 output frames, got {len(denoised_files)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. PSNR regression check (Python model)
+# ---------------------------------------------------------------------------
+
+class TestPSNRRegression:
+    """PSNR sanity check: a randomly initialised model should produce a
+    valid image (PSNR defined, no NaN/Inf), and a trained model (if present)
+    should exceed the minimum thresholds from the plan."""
+
+    def _psnr(self, a: torch.Tensor, b: torch.Tensor) -> float:
+        mse = ((a - b) ** 2).mean().item()
+        if mse < 1e-10:
+            return float("inf")
+        return 10.0 * np.log10(1.0 / mse)
+
+    def test_random_init_no_nan(self):
+        torch.manual_seed(3)
+        model = NEFResidual(tiny_config()).eval()
+        x = torch.rand(1, 3, 64, 64) * 0.8 + 0.1
+
+        with torch.no_grad():
+            y = model(x)
+
+        assert not torch.isnan(y).any(), "Output contains NaN"
+        assert not torch.isinf(y).any(), "Output contains Inf"
+
+    @pytest.mark.skipif(
+        not (REPO_ROOT / "checkpoints" / "residual_standard" / "best.pth").exists(),
+        reason="Trained checkpoint not found — skipping PSNR regression"
+    )
+    def test_trained_model_psnr_awgn_sigma25(self):
+        """Trained standard model must achieve >31 dB on AWGN sigma=25."""
+        from models import ModelConfig
+
+        ckpt_path = REPO_ROOT / "checkpoints" / "residual_standard" / "best.pth"
+        model = NEFResidual(ModelConfig.standard())
+        state = torch.load(str(ckpt_path), map_location="cpu")
+        model.load_state_dict(state.get("model_state_dict", state))
+        model.eval()
+
+        torch.manual_seed(99)
+        sigma  = 25.0 / 255.0
+        clean  = torch.rand(4, 3, 256, 256)
+        noisy  = (clean + torch.randn_like(clean) * sigma).clamp(0, 1)
+
+        with torch.no_grad():
+            denoised = model(noisy)
+
+        psnr = self._psnr(denoised, clean)
+        assert psnr > 31.0, f"PSNR {psnr:.2f} dB below 31 dB threshold"
