@@ -48,6 +48,9 @@ def compute_psnr(output: np.ndarray, clean: np.ndarray) -> float:
 
 def compute_ssim(output: np.ndarray, clean: np.ndarray) -> float:
     """Compute mean SSIM (averaged over channels if multi-channel)."""
+    if np.allclose(output, clean):
+        return 1.0
+
     try:
         from skimage.metrics import structural_similarity
     except ImportError:
@@ -58,8 +61,20 @@ def compute_ssim(output: np.ndarray, clean: np.ndarray) -> float:
             structural_similarity(output[..., c], clean[..., c], data_range=1.0)
             for c in range(output.shape[-1])
         ]
-        return float(np.mean(scores))
-    return float(structural_similarity(output, clean, data_range=1.0))
+        scores = [
+            score
+            if np.isfinite(score)
+            else (1.0 if np.allclose(output[..., idx], clean[..., idx]) else 0.0)
+            for idx, score in enumerate(scores)
+        ]
+        mean_score = np.mean(scores)
+        if np.isfinite(mean_score):
+            return float(mean_score)
+        return 0.0
+    score = structural_similarity(output, clean, data_range=1.0)
+    if np.isfinite(score):
+        return float(score)
+    return 1.0 if np.allclose(output, clean) else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +203,25 @@ def _load_image(path: Path) -> np.ndarray:
 
 
 def _save_image(path: Path, img: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = img.astype(np.float32)
+
+    if path.suffix.lower() == ".exr":
+        import OpenEXR
+
+        out = np.clip(img, 0.0, 1.0)
+        if out.ndim == 2:
+            out = np.repeat(out[..., None], 3, axis=2)
+        elif out.shape[-1] == 1:
+            out = np.repeat(out, 3, axis=2)
+        elif out.shape[-1] > 3:
+            out = out[..., :3]
+        OpenEXR.File({"type": OpenEXR.scanlineimage}, {"RGB": out}).write(str(path))
+        return
+
     import imageio.v3 as iio
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    out = (img * 255.0).clip(0, 255).astype(np.uint8)
+    out = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
     iio.imwrite(str(path), out)
 
 

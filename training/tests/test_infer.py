@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from infer import _clip_indices, _load_image, denoise_temporal_frame
+from infer import _clip_indices, _load_image, _save_image, compute_ssim, denoise_temporal_frame
 
 
 class TestInferImageLoading:
@@ -25,6 +25,21 @@ class TestInferImageLoading:
         assert np.isclose(img[..., 0].mean(), 0.1)
         assert np.isclose(img[..., 1].mean(), 0.2)
         assert np.isclose(img[..., 2].mean(), 0.3)
+
+    def test_save_exr_image(self, tmp_path: Path) -> None:
+        exr_path = tmp_path / "out.exr"
+        img = np.zeros((8, 8, 3), dtype=np.float32)
+        img[..., 0] = 0.15
+        img[..., 1] = 0.25
+        img[..., 2] = 0.35
+
+        _save_image(exr_path, img)
+        reloaded = _load_image(exr_path)
+
+        assert reloaded.shape == img.shape
+        assert np.isclose(reloaded[..., 0].mean(), 0.15)
+        assert np.isclose(reloaded[..., 1].mean(), 0.25)
+        assert np.isclose(reloaded[..., 2].mean(), 0.35)
 
 
 class _DummyTemporalModel(torch.nn.Module):
@@ -56,3 +71,11 @@ class TestTemporalInfer:
 
         assert output.shape == sequence[2].shape
         assert np.allclose(output, sequence[2])
+
+
+class TestMetrics:
+    def test_ssim_is_finite_for_flat_identical_images(self) -> None:
+        img = np.full((16, 16, 3), 0.5, dtype=np.float32)
+        score = compute_ssim(img, img.copy())
+        assert np.isfinite(score)
+        assert score == 1.0
