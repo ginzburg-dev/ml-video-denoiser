@@ -169,7 +169,7 @@ TEST_F(NAFNetForwardTest, DISABLED_OutputInRange) {
 }
 
 // C++ output must match the Python reference within FP16 tolerance.
-// The reference is stored in fixtures/tiny_unet/expected_output.bin (FP32).
+// The reference is stored in fixtures/tiny_nafnet/expected_output.bin (FP32).
 TEST_F(NAFNetForwardTest, DISABLED_PyTorchParitySmallInput) {
     const auto ref_path = fixture_dir_ / "expected_output.bin";
     if (!fs::exists(ref_path)) {
