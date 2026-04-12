@@ -6,14 +6,20 @@ NEFResidual
     from the input to recover the clean image.
 
 NEFTemporal
-    Multi-frame temporal denoiser.  Extends NEFResidual with a deformable-
-    convolution alignment stage that compensates for inter-frame motion
-    before temporal feature aggregation.
+    Multi-frame temporal denoiser.  Encodes all T frames with a shared
+    encoder.  At each scale the reference frame features are concatenated
+    with the mean of neighbour features and mixed by a learned 1×1 conv.
+
+    Optional learned warp (ModelConfig.use_warp=True): before mixing, each
+    neighbour feature map is warped to the reference using a per-level
+    offset head — a lightweight Conv2d(2C, 2, 1) that predicts a dense
+    (dx, dy) displacement field applied via bilinear grid_sample.  Use this
+    for real video with significant camera or object motion.  Leave disabled
+    for render sequences where Monte Carlo noise is pixel-independent.
 
 Both models accept float32 images and return float32 values. No clamping is applied — the full input range is preserved.
 """
 
-import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -38,7 +44,10 @@ class ModelConfig:
         in_channels: Number of input image channels (default: 3 for RGB).
         out_channels: Number of output channels (default: 3).
         num_frames: Temporal window size for NEFTemporal (default: 5).
-        deform_groups: Number of deformable convolution groups (default: 8).
+        use_warp: Enable learned per-level warp in NEFTemporal.  Each
+            neighbour feature map is warped to the reference before mixing
+            using a lightweight Conv2d(2C, 2, 1) offset head.  Recommended
+            for real video; leave False for render sequences (default: False).
         sigma_min: Minimum noise std used during training (informational).
         sigma_max: Maximum noise std used during training (informational).
     """
@@ -47,7 +56,7 @@ class ModelConfig:
     in_channels: int = 3
     out_channels: int = 3
     num_frames: int = 5
-    deform_groups: int = 8
+    use_warp: bool = False
     sigma_min: float = 0.0
     sigma_max: float = 75.0 / 255.0
 
@@ -179,6 +188,85 @@ def _unpad(x: Tensor, padding: tuple[int, int, int, int]) -> Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Spatial weight transfer and freeze helpers
+# ---------------------------------------------------------------------------
+
+
+def load_spatial_weights(model: "NEFTemporal", path: "Path | str") -> int:
+    """Load encoder / bottleneck / decoder / head weights from a NEFResidual checkpoint.
+
+    Keys that exist in both models and have matching shapes are transferred;
+    temporal-only keys (temporal_mix, offset_heads) are left at their
+    initialised values.
+
+    Args:
+        model: A NEFTemporal instance to update in-place.
+        path:  Path to a NEFResidual checkpoint saved by training.py
+               (must contain a ``model_state_dict`` key).
+
+    Returns:
+        Number of parameter tensors transferred.
+    """
+    from pathlib import Path as _Path
+
+    ckpt = torch.load(str(path), map_location="cpu", weights_only=True)
+    src = ckpt.get("model_state_dict", ckpt)
+    dst = model.state_dict()
+    transferred = {k: v for k, v in src.items() if k in dst and dst[k].shape == v.shape}
+    dst.update(transferred)
+    model.load_state_dict(dst)
+    return len(transferred)
+
+
+def freeze_spatial(model: "NEFTemporal") -> None:
+    """Freeze encoder / bottleneck / decoder / head — train temporal components only.
+
+    After calling this, only ``temporal_mix`` (and ``offset_heads`` when
+    use_warp=True) have ``requires_grad=True``.
+    """
+    for module in (model.encoders, model.bottleneck, model.decoders, model.head):
+        for p in module.parameters():
+            p.requires_grad_(False)
+
+
+def unfreeze_spatial(model: "NEFTemporal") -> None:
+    """Re-enable gradients for all spatial parameters (undo freeze_spatial)."""
+    for module in (model.encoders, model.bottleneck, model.decoders, model.head):
+        for p in module.parameters():
+            p.requires_grad_(True)
+
+
+# ---------------------------------------------------------------------------
+# Warp utility
+# ---------------------------------------------------------------------------
+
+
+def _warp(feat: Tensor, offset: Tensor) -> Tensor:
+    """Warp *feat* by a dense displacement field *offset*.
+
+    Args:
+        feat:   (B, C, H, W) feature map to warp.
+        offset: (B, 2, H, W) displacement in pixel units.
+                offset[:, 0] = dx (horizontal), offset[:, 1] = dy (vertical).
+
+    Returns:
+        Warped feature map (B, C, H, W), sampled bilinearly with border padding.
+    """
+    b, _, h, w = feat.shape
+    # Normalised base grid in [-1, 1]
+    grid_y, grid_x = torch.meshgrid(
+        torch.linspace(-1.0, 1.0, h, device=feat.device, dtype=feat.dtype),
+        torch.linspace(-1.0, 1.0, w, device=feat.device, dtype=feat.dtype),
+        indexing="ij",
+    )
+    base = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)  # (1, H, W, 2)
+    # Convert pixel-space offset to [-1, 1] normalised space
+    norm = torch.stack([offset[:, 0] / (w / 2.0), offset[:, 1] / (h / 2.0)], dim=-1)  # (B, H, W, 2)
+    grid = base + norm  # (B, H, W, 2)
+    return F.grid_sample(feat, grid, mode="bilinear", padding_mode="border", align_corners=True)
+
+
+# ---------------------------------------------------------------------------
 # NEFResidual
 # ---------------------------------------------------------------------------
 
@@ -273,124 +361,73 @@ class NEFResidual(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Deformable alignment (for NEFTemporal)
-# ---------------------------------------------------------------------------
-
-
-class DeformableAlignment(nn.Module):
-    """DCNv2-style deformable convolution alignment.
-
-    Aligns a *neighbour* feature map to a *reference* feature map by
-    predicting spatial offsets and modulation masks via a small convolutional
-    head, then applying them through torchvision's deformable convolution.
-
-    Args:
-        channels: Number of feature channels (same for both inputs).
-        kernel_size: Kernel size for deformable convolution (default: 3).
-        deform_groups: Number of independent deformable groups (default: 8).
-    """
-
-    def __init__(
-        self,
-        channels: int,
-        kernel_size: int = 3,
-        deform_groups: int = 8,
-    ) -> None:
-        super().__init__()
-        try:
-            from torchvision.ops import deform_conv2d as _  # noqa: F401
-        except ImportError as exc:
-            raise ImportError(
-                "torchvision is required for DeformableAlignment. "
-                "Install it with: uv add torchvision"
-            ) from exc
-
-        pad = kernel_size // 2
-        n_offset_ch = 2 * kernel_size * kernel_size * deform_groups
-        n_mask_ch = kernel_size * kernel_size * deform_groups
-
-        # Offset + mask prediction head (takes concat of ref and neighbour).
-        # Zero-init so offsets start at 0 (no warp) and masks start at 0.5
-        # after sigmoid — identity alignment at epoch 0.
-        self.offset_conv = nn.Conv2d(
-            2 * channels, n_offset_ch, kernel_size, padding=pad, bias=True
-        )
-        self.mask_conv = nn.Conv2d(
-            2 * channels, n_mask_ch, kernel_size, padding=pad, bias=True
-        )
-        nn.init.zeros_(self.offset_conv.weight)
-        nn.init.zeros_(self.offset_conv.bias)
-        nn.init.zeros_(self.mask_conv.weight)
-        nn.init.zeros_(self.mask_conv.bias)
-
-        # Main deformable convolution weight (same channels in/out)
-        self.weight = nn.Parameter(
-            torch.empty(channels, channels, kernel_size, kernel_size)
-        )
-        self.bias = nn.Parameter(torch.zeros(channels))
-
-        self._deform_groups = deform_groups
-        self._kernel_size = kernel_size
-        self._padding = pad
-
-        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-
-    def forward(self, ref: Tensor, neighbour: Tensor) -> Tensor:
-        """Align *neighbour* towards *ref* and return aligned features.
-
-        Args:
-            ref: Reference frame features (B, C, H, W).
-            neighbour: Neighbour frame features (B, C, H, W).
-
-        Returns:
-            Aligned neighbour features (B, C, H, W).
-        """
-        from torchvision.ops import deform_conv2d
-
-        concat = torch.cat([ref, neighbour], dim=1)  # (B, 2C, H, W)
-        offset = self.offset_conv(concat)
-        mask = torch.sigmoid(self.mask_conv(concat))
-
-        return deform_conv2d(
-            neighbour,
-            offset=offset,
-            weight=self.weight,
-            bias=self.bias,
-            padding=self._padding,
-            mask=mask,
-        )
-
-
-# ---------------------------------------------------------------------------
 # NEFTemporal
 # ---------------------------------------------------------------------------
 
 
 class NEFTemporal(nn.Module):
-    """Multi-frame temporal denoiser with deformable alignment.
+    """Multi-frame temporal denoiser with simple feature mixing.
 
     Architecture:
         1. Shared encoder applied to all T frames (as a batch).
-        2. Per-level DeformableAlignment: each non-reference frame is aligned
-           to the reference at every encoder scale.
-        3. Per-level temporal fusion: aligned features + reference are
-           concatenated across the channel dimension and projected back.
-        4. Shared decoder with fused temporal skip connections.
+        2. Per-level mixing: mean of neighbour features concatenated with
+           reference features, projected back to C channels via a 1×1 conv.
+        3. Optional warp (use_warp=True): before computing the neighbour mean,
+           each neighbour feature is warped to the reference via a per-level
+           offset head — Conv2d(2C, 2, 1) predicting a dense (dx, dy) field
+           applied with bilinear grid_sample.  Recommended for real video.
+        4. Shared decoder with mixed temporal skip connections.
         5. Same residual head as NEFResidual.
 
     The reference frame is always the centre frame:
         reference index = num_frames // 2
 
+    At epoch 0 the model is identity: temporal_mix layers are initialised so
+    the reference-feature slice passes through unchanged (neighbour weight = 0).
+    Offset heads are zero-initialised so warp starts as identity.
+
     Args:
-        config: ModelConfig; num_frames and deform_groups are used.
+        config: ModelConfig; num_frames and use_warp are used.
 
     Example::
 
         model = NEFTemporal(ModelConfig.standard())
-        # (B, T, C, H, W) — 5 consecutive frames
         clip = torch.rand(1, 5, 3, 256, 256)
         denoised = model(clip)  # (B, C, H, W) — denoised centre frame
+
+        # With warp for real video:
+        cfg = ModelConfig.standard()
+        cfg.use_warp = True
+        model = NEFTemporal(cfg)
     """
+
+    @classmethod
+    def from_residual(
+        cls,
+        path: "Path | str",
+        config: Optional[ModelConfig] = None,
+    ) -> "NEFTemporal":
+        """Create a NEFTemporal pre-loaded with weights from a NEFResidual checkpoint.
+
+        Temporal components (temporal_mix, offset_heads) keep their identity
+        initialisations; the spatial backbone is warm-started from *path*.
+
+        Args:
+            path:   Path to a NEFResidual checkpoint produced by training.py.
+            config: ModelConfig to use (default: standard).  Must match the
+                    architecture used when training the residual model.
+
+        Returns:
+            A NEFTemporal instance with spatial weights transferred.
+
+        Example::
+
+            model = NEFTemporal.from_residual("checkpoints/residual/best.pth")
+            freeze_spatial(model)   # stage 2: train temporal components only
+        """
+        model = cls(config)
+        n = load_spatial_weights(model, path)
+        return model
 
     def __init__(self, config: Optional[ModelConfig] = None) -> None:
         super().__init__()
@@ -398,11 +435,11 @@ class NEFTemporal(nn.Module):
         self._pad_multiple = cfg.pad_multiple
         self._num_frames = cfg.num_frames
         self._ref_idx = cfg.num_frames // 2
+        self._use_warp = cfg.use_warp
 
         enc_ch = cfg.enc_channels
         in_ch = cfg.in_channels
         out_ch = cfg.out_channels
-        n_neigh = cfg.num_frames - 1  # number of non-reference frames
 
         # Shared encoder (same weights for all frames)
         self.encoders = nn.ModuleList()
@@ -411,15 +448,29 @@ class NEFTemporal(nn.Module):
             self.encoders.append(EncoderBlock(prev_ch, ch))
             prev_ch = ch
 
-        # Per-level deformable alignment (weight-shared across neighbour positions)
-        self.align_layers = nn.ModuleList(
-            [DeformableAlignment(ch, deform_groups=cfg.deform_groups) for ch in enc_ch]
-        )
+        # Per-level offset heads (only created when use_warp=True).
+        # Input: cat([ref_feat, neigh_feat]) → 2-channel (dx, dy) displacement.
+        # Zero-init: warp starts as identity (zero displacement) at epoch 0.
+        if self._use_warp:
+            self.offset_heads = nn.ModuleList()
+            for ch in enc_ch:
+                head = nn.Conv2d(2 * ch, 2, kernel_size=1, bias=True)
+                nn.init.zeros_(head.weight)
+                nn.init.zeros_(head.bias)
+                self.offset_heads.append(head)
 
-        # Per-level temporal fusion: (T * ch) → ch
-        self.fusion_layers = nn.ModuleList(
-            [nn.Conv2d(cfg.num_frames * ch, ch, kernel_size=1) for ch in enc_ch]
-        )
+        # Per-level temporal mixing: cat([ref, neigh_mean], dim=1) → ch.
+        # Input layout: channels [0..ch-1] = ref, [ch..2*ch-1] = neighbour mean.
+        # Identity init: ref slice = eye, neighbour slice = zero.
+        # At epoch 0 output == ref features; neighbour influence is learned.
+        self.temporal_mix = nn.ModuleList()
+        for ch in enc_ch:
+            conv = nn.Conv2d(2 * ch, ch, kernel_size=1, bias=True)
+            nn.init.zeros_(conv.weight)
+            nn.init.zeros_(conv.bias)
+            for c in range(ch):
+                conv.weight.data[c, c, 0, 0] = 1.0  # ref slice → identity
+            self.temporal_mix.append(conv)
 
         # Bottleneck
         bot_ch = enc_ch[-1] * 2
@@ -450,51 +501,49 @@ class NEFTemporal(nn.Module):
             Denoised centre frame (B, C, H, W), same range as input.
         """
         b, t, c, h, w = clip.shape
-        assert t == self._num_frames, (
-            f"Expected {self._num_frames} frames, got {t}"
-        )
+        assert t == self._num_frames, f"Expected {self._num_frames} frames, got {t}"
 
         ref_input = clip[:, self._ref_idx]  # (B, C, H, W)
 
-        # Pad all frames identically
+        # Pad all frames identically (same H, W → same padding)
         frames_padded = []
         for i in range(t):
             padded, padding = _pad_to_multiple(clip[:, i], self._pad_multiple)
             frames_padded.append(padded)
-        # padding is the same for all frames (same H, W)
 
         # --- Encode all frames (batch trick: (B*T, C, H, W)) ---
-        stacked = torch.stack(frames_padded, dim=1)          # (B, T, C, H, W)
-        bT = b * t
-        x = stacked.view(bT, c, *stacked.shape[-2:])          # (B*T, C, H, W)
+        stacked = torch.stack(frames_padded, dim=1)   # (B, T, C, H, W)
+        x = stacked.view(b * t, c, *stacked.shape[-2:])  # (B*T, C, H, W)
 
-        all_skips: list[list[Tensor]] = []  # [level][frame_idx]
+        all_skips: list[list[Tensor]] = []  # [level][frame]
         all_pooled: list[Tensor] = []
 
         for enc in self.encoders:
             x, skip = enc(x)
-            # Reshape back to (B, T, C', H', W') and split by frame
             _, cp, hp, wp = skip.shape
             skip_bt = skip.view(b, t, cp, hp, wp)
             all_skips.append([skip_bt[:, i] for i in range(t)])
-            # x is still (B*T, ...) — keep for next level
-            all_pooled.append(x)  # store intermediate for bottleneck
+            all_pooled.append(x)
 
-        # --- Per-level deformable alignment + temporal fusion ---
+        # --- Per-level temporal mixing (with optional learned warp) ---
         fused_skips: list[Tensor] = []
-        for level, (align, fuse) in enumerate(zip(self.align_layers, self.fusion_layers)):
+        for level, mix in enumerate(self.temporal_mix):
             ref_feat = all_skips[level][self._ref_idx]  # (B, C', H', W')
-            aligned = []
-            for i in range(t):
-                if i == self._ref_idx:
-                    aligned.append(ref_feat)
-                else:
-                    aligned.append(align(ref_feat, all_skips[level][i]))
-            # Concatenate along channel dim and fuse: (B, T*C', H', W') → (B, C', H', W')
-            fused = fuse(torch.cat(aligned, dim=1))
+            neigh_feats = [all_skips[level][i] for i in range(t) if i != self._ref_idx]
+
+            if self._use_warp:
+                offset_head = self.offset_heads[level]
+                warped = []
+                for nf in neigh_feats:
+                    offset = offset_head(torch.cat([ref_feat, nf], dim=1))  # (B, 2, H', W')
+                    warped.append(_warp(nf, offset))
+                neigh_feats = warped
+
+            neigh_mean = torch.stack(neigh_feats, dim=0).mean(dim=0)  # (B, C', H', W')
+            fused = mix(torch.cat([ref_feat, neigh_mean], dim=1))
             fused_skips.append(fused)
 
-        # --- Bottleneck (use reference frame's deepest features) ---
+        # --- Bottleneck (reference frame's deepest features) ---
         _, cp, hp, wp = all_pooled[-1].shape
         ref_deep = all_pooled[-1].view(b, t, cp, hp, wp)[:, self._ref_idx]
         x = self.bottleneck(ref_deep)

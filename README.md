@@ -443,6 +443,70 @@ With `--random-temporal-windows`, each sequence contributes
 `--windows-per-sequence` randomly selected temporal windows per epoch instead
 of all possible sliding windows.
 
+### Two-stage temporal training
+
+Training `NEFTemporal` end-to-end from scratch is less efficient than first
+building a strong spatial denoiser, then teaching the temporal components on top
+of it.  The `NEFResidual` and `NEFTemporal` encoders / decoders / head are
+architecturally identical, so weights transfer directly.
+
+**Stage 1 — train the spatial model:**
+
+```bash
+uv run python training.py \
+    --model residual \
+    --data /path/to/clean/images \
+    --output checkpoints/residual \
+    --epochs 300
+```
+
+**Stage 2 — load spatial weights, train temporal components only:**
+
+`--spatial-weights` transfers the encoder / bottleneck / decoder / head from the
+`NEFResidual` checkpoint.  `--freeze-spatial` freezes those layers so only
+`temporal_mix` (and `offset_heads` when `use_warp=True`) receive gradients.
+
+```bash
+uv run python training.py \
+    --model temporal \
+    --data /path/to/sequences \
+    --spatial-weights checkpoints/residual/best.pth \
+    --freeze-spatial \
+    --output checkpoints/temporal_stage2 \
+    --epochs 100
+```
+
+The startup log prints how many tensors were transferred and the trainable /
+frozen parameter counts, so you can confirm the freeze is applied correctly:
+
+```
+Loaded 110 spatial weight tensors from checkpoints/residual/best.pth
+Spatial layers frozen.  Trainable params: 174,560  Frozen: 7,849,667
+```
+
+**Stage 3 — fine-tune all layers jointly at a lower learning rate:**
+
+`--spatial-weights` warm-starts the backbone; omitting `--freeze-spatial`
+leaves all parameters trainable.  Use `--resume` to continue from the stage 2
+checkpoint.
+
+```bash
+uv run python training.py \
+    --model temporal \
+    --data /path/to/sequences \
+    --spatial-weights checkpoints/residual/best.pth \
+    --resume checkpoints/temporal_stage2/best.pth \
+    --lr 5e-5 \
+    --output checkpoints/temporal_stage3 \
+    --epochs 100
+```
+
+**Why this works:**  
+During stage 2 the backbone already produces high-quality per-frame features.
+`temporal_mix` has a clear learning signal from day one — it only needs to learn
+how much temporal context to blend in.  Training from scratch forces the encoder
+and temporal modules to co-adapt simultaneously, which is slower and less stable.
+
 ### Checkpoints
 
 All checkpoints are written under `--output` (default: `checkpoints/run`):
@@ -649,15 +713,33 @@ CLI options:
 ## Architecture
 
 ### NEFResidual (spatial)
-4-level UNet (enc_channels `[64,128,256,512]` standard).  
-Output = `clamp(input − predicted_noise, 0, 1)`.  
-Auto reflect-pads to multiple of 2^num_levels.
 
-### NEFTemporal (5-frame)
-Shared encoder → per-level DCNv2 deformable alignment → temporal fusion → shared decoder.  
-Reference frame = centre frame (index 2 of 5).
+4-level UNet (`enc_channels = [64, 128, 256, 512]` for standard).  
+Predicts a noise residual and subtracts it from the input — no clamping applied, full dynamic range preserved.  
+Reflect-pads input to a multiple of `2^num_levels`, strips padding before returning.
+
+### NEFTemporal (multi-frame)
+
+Shared encoder applied to all T frames as a batch.  
+At each encoder scale, neighbour features are averaged and concatenated with the reference frame's features; a 1×1 conv learns how much to pull from the temporal context.  
+Reference frame = centre frame (index `num_frames // 2`).  
+No deformable alignment by default — Monte Carlo render noise is pixel-independent across frames and averages out naturally without warping.
+
+**Optional learned warp** (`ModelConfig.use_warp = True`):  
+Each neighbour feature map is warped to the reference before mixing using a per-level offset head — `Conv2d(2C, 2, 1)` predicting a dense `(dx, dy)` displacement field applied via bilinear `grid_sample`. Use this for real video with significant camera or object motion; leave disabled for render sequences.
+
+**Model sizes** (configured via `ModelConfig`):
+
+| Size | `enc_channels` | NEFResidual params | NEFTemporal params |
+|---|---|---|---|
+| `lite` | `[32, 64, 128, 256]` | ~2 M | ~2 M + temporal |
+| `standard` | `[64, 128, 256, 512]` | ~8 M | ~8 M + temporal |
+| `heavy` | `[96, 192, 384, 768]` | ~18 M | ~18 M + temporal |
+
+At epoch 0 both models are exact identity (head zero-init, temporal mix init = ref passthrough).
 
 ### C++ weight format
+
 `manifest.json` + flat `.bin` files (little-endian, NCHW).  
 Conv weights: FP16. BN stats: always FP32.
 

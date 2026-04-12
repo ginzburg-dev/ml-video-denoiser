@@ -6,6 +6,34 @@ Supports:
   - Checkpoint save/resume
   - TensorBoard logging
   - Paired clean/noisy datasets mixed with synthetic noise generation
+  - Two-stage temporal training: warm-start from a spatial checkpoint,
+    optionally freeze spatial layers to train temporal components first
+
+Stage 1 — train spatial model:
+    uv run python training.py \\
+        --model residual \\
+        --data /path/to/clean/images \\
+        --output checkpoints/residual \\
+        --epochs 300
+
+Stage 2 — load spatial weights, train temporal components only:
+    uv run python training.py \\
+        --model temporal \\
+        --data /path/to/sequences \\
+        --spatial-weights checkpoints/residual/best.pth \\
+        --freeze-spatial \\
+        --output checkpoints/temporal_stage2 \\
+        --epochs 100
+
+Stage 3 — unfreeze all, fine-tune jointly at lower lr:
+    uv run python training.py \\
+        --model temporal \\
+        --data /path/to/sequences \\
+        --spatial-weights checkpoints/residual/best.pth \\
+        --resume checkpoints/temporal_stage2/best.pth \\
+        --output checkpoints/temporal_stage3 \\
+        --lr 5e-5 \\
+        --epochs 100
 
 Usage — synthetic noise only:
     uv run python training.py \\
@@ -55,7 +83,7 @@ from dataset import (
     VideoSequenceDataset,
 )
 from losses import NoiseWeightedL1Loss
-from models import ModelConfig, NEFResidual, NEFTemporal
+from models import ModelConfig, NEFResidual, NEFTemporal, freeze_spatial, load_spatial_weights
 from noise_generators import (
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
@@ -211,7 +239,10 @@ def train(
     original_device = _module_device(model)
     model = model.to(device)
 
-    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=lr, weight_decay=weight_decay,
+    )
     scheduler = warmup_cosine_schedule(optimizer, warmup_epochs, epochs)
     criterion = NoiseWeightedL1Loss(epsilon=0.01)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
@@ -261,7 +292,9 @@ def train(
                 scaler.scale(loss).backward()
                 if grad_clip > 0:
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    nn.utils.clip_grad_norm_(
+                        [p for p in model.parameters() if p.requires_grad], grad_clip
+                    )
                 scaler.step(optimizer)
                 scaler.update()
 
@@ -358,6 +391,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", choices=["residual", "temporal"], default="residual")
     parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
+    parser.add_argument("--spatial-weights", default=None, metavar="PATH",
+                        help="Load encoder/bottleneck/decoder/head weights from a NEFResidual "
+                             "checkpoint into NEFTemporal before training. Requires --model temporal.")
+    parser.add_argument("--freeze-spatial", action="store_true",
+                        help="Freeze spatial layers (encoders, bottleneck, decoders, head) — "
+                             "only temporal_mix and offset_heads receive gradients. "
+                             "Requires --model temporal.")
     # Synthetic (clean-only) data
     parser.add_argument("--data", nargs="+", default=None, metavar="DIR",
                         help="Directory(ies) of clean images for synthetic noise training.")
@@ -731,7 +771,22 @@ def main() -> None:
         val_clean_dirs, val_noisy_dirs = val_sources
         val_ds = _make_paired_ds(val_clean_dirs, val_noisy_dirs, for_validation=True)
 
+    if args.spatial_weights and not is_temporal:
+        parser.error("--spatial-weights requires --model temporal.")
+    if args.freeze_spatial and not is_temporal:
+        parser.error("--freeze-spatial requires --model temporal.")
+
     model_instance = NEFTemporal(config) if is_temporal else NEFResidual(config)
+
+    if args.spatial_weights:
+        n = load_spatial_weights(model_instance, args.spatial_weights)
+        print(f"Loaded {n} spatial weight tensors from {args.spatial_weights}")
+
+    if args.freeze_spatial:
+        freeze_spatial(model_instance)
+        n_trainable = sum(p.numel() for p in model_instance.parameters() if p.requires_grad)
+        n_frozen    = sum(p.numel() for p in model_instance.parameters() if not p.requires_grad)
+        print(f"Spatial layers frozen.  Trainable params: {n_trainable:,}  Frozen: {n_frozen:,}")
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
