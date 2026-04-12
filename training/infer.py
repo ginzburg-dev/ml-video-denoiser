@@ -319,11 +319,15 @@ def main() -> None:
             if p.suffix.lower() in _IMAGE_EXT
         ]
     elif args.input:
-        pairs = [
-            (p, None)
-            for p in sorted(Path(args.input).iterdir())
-            if p.suffix.lower() in _IMAGE_EXT
-        ]
+        input_path = Path(args.input)
+        if input_path.is_file():
+            pairs = [(input_path, None)]
+        else:
+            pairs = [
+                (p, None)
+                for p in sorted(input_path.iterdir())
+                if p.suffix.lower() in _IMAGE_EXT
+            ]
     else:
         parser.error("Specify either --input or both --noisy and --clean.")
 
@@ -357,6 +361,7 @@ def main() -> None:
             if args.output:
                 _save_image(Path(args.output) / noisy_path.name, output_img)
     else:
+        single_file = len(pairs) == 1 and Path(args.input).is_file() if args.input else False
         for noisy_path, clean_path in pairs:
             noisy_img = _load_image(noisy_path)
             if args.sigma > 0:
@@ -375,7 +380,8 @@ def main() -> None:
                 print(f"{noisy_path.name}: denoised")
 
             if args.output:
-                _save_image(Path(args.output) / noisy_path.name, output_img)
+                out = Path(args.output) if single_file else Path(args.output) / noisy_path.name
+                _save_image(out, output_img)
 
     if psnr_values:
         print(f"\nMean PSNR: {np.mean(psnr_values):.2f} dB")
