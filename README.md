@@ -268,7 +268,8 @@ Smoke tests for the training CLI and validation pipeline.
 | `TestValidationPairs` | `--val-clean / --val-noisy` validation runs; val PSNR logged; `best.pth` saved |
 | `TestValidationCropModes` | `center`, `grid`, `full`, `random` crop modes all run without error |
 | `TestCheckpointResume` | Checkpoint from epoch 1 resumes correctly to epoch 2 |
-| `TestSpatialWeightsFlag` | `--spatial-weights` loads correct tensor count; `--freeze-spatial` freezes backbone; both reject `--model residual` |
+| `TestSpatialWeightsFlag` | `--spatial-weights` loads correct tensor count; `--freeze-spatial` freezes backbone; both reject `--model temporal` when used without temporal model |
+| `TestFramesPerSequence` | `--frames-per-sequence N` selects evenly spread frames from sequence subdirs; flat directory triggers warning and uses all images; rejects `--model temporal` |
 
 ### Integration tests (`tests/test_integration.py`)
 
@@ -301,7 +302,7 @@ The simplest setup — no paired data needed.  Noise is generated on the fly fro
 cd training
 uv run python training.py \
     --data /path/to/clean/images \
-    --output checkpoints/residual_standard \
+    --output checkpoints/spatial_standard \
     --epochs 300
 ```
 
@@ -312,7 +313,7 @@ uv run python training.py \
     --data /path/to/clean/images \
     --patch-pool pools/camera_iso1600.npz \
     --noise-profile profiles/camera_iso1600.json \
-    --output checkpoints/residual_mixed \
+    --output checkpoints/spatial_mixed \
     --epochs 300
 ```
 
@@ -331,7 +332,7 @@ Use paired data when you have matching clean ground-truth and real noisy capture
 uv run python training.py \
     --paired-clean /path/to/clean \
     --paired-noisy /path/to/noisy \
-    --output checkpoints/residual_paired \
+    --output checkpoints/spatial_paired \
     --epochs 300
 
 # Mixed: 60% synthetic + 40% paired
@@ -340,7 +341,7 @@ uv run python training.py \
     --paired-clean /path/to/clean \
     --paired-noisy /path/to/noisy \
     --paired-weight 0.4 \
-    --output checkpoints/residual_mixed \
+    --output checkpoints/spatial_mixed \
     --epochs 300
 ```
 
@@ -447,6 +448,53 @@ With `--random-temporal-windows`, each sequence contributes
 `--windows-per-sequence` randomly selected temporal windows per epoch instead
 of all possible sliding windows.
 
+### Spatial training on sequence folder structures
+
+If your clean data is organised as frame sequences (subdirectories of numbered
+images) rather than a flat folder of individual images, use
+`--frames-per-sequence N` to control how many frames are sampled per sequence
+per epoch.
+
+```text
+sequences/
+  scene_001/  frame_0001.png … frame_0090.png
+  scene_002/  frame_0001.png … frame_0060.png
+  scene_003/  …
+```
+
+```bash
+# Pick 10 evenly spread frames from each scene — first, spread, last
+uv run python training.py \
+    --model spatial \
+    --data /path/to/sequences \
+    --frames-per-sequence 10 \
+    --output checkpoints/spatial \
+    --epochs 300
+```
+
+Frame selection is deterministic — evenly spread indices using integer linspace,
+always including the first and last frame:
+
+| Sequence length | `--frames-per-sequence` | Selected indices |
+|---|---|---|
+| 90 | 3 | 0, 44, 89 |
+| 90 | 5 | 0, 22, 44, 67, 89 |
+| 90 | 10 | 0, 10, 20, 30, 40, 50, 60, 70, 80, 89 |
+| 3 | 10 | 0, 1, 2 (count capped at sequence length) |
+
+**Flat directory behaviour:** `--frames-per-sequence` only applies to
+subdirectory-structured roots.  If you pass a flat directory (images at the
+top level, no subdirectories), the flag is ignored and all images are used —
+a warning is printed to tell you:
+
+```
+UserWarning: --frames-per-sequence has no effect on flat directory /path/to/data
+(no sequence subdirectories found). Using all 4200 images.
+```
+
+`--frames-per-sequence` is not available for `--model temporal` — use
+`--windows-per-sequence` instead, which selects temporal clip windows.
+
 ### Two-stage temporal training
 
 Training `NEFTemporal` end-to-end from scratch is less efficient than first
@@ -458,9 +506,9 @@ architecturally identical, so weights transfer directly.
 
 ```bash
 uv run python training.py \
-    --model residual \
+    --model spatial \
     --data /path/to/clean/images \
-    --output checkpoints/residual \
+    --output checkpoints/spatial \
     --epochs 300
 ```
 
@@ -474,7 +522,7 @@ uv run python training.py \
 uv run python training.py \
     --model temporal \
     --data /path/to/sequences \
-    --spatial-weights checkpoints/residual/best.pth \
+    --spatial-weights checkpoints/spatial/best.pth \
     --freeze-spatial \
     --output checkpoints/temporal_stage2 \
     --epochs 100
@@ -484,7 +532,7 @@ The startup log prints how many tensors were transferred and the trainable /
 frozen parameter counts, so you can confirm the freeze is applied correctly:
 
 ```
-Loaded 110 spatial weight tensors from checkpoints/residual/best.pth
+Loaded 110 spatial weight tensors from checkpoints/spatial/best.pth
 Spatial layers frozen.  Trainable params: 174,560  Frozen: 7,849,667
 ```
 
@@ -498,7 +546,7 @@ checkpoint.
 uv run python training.py \
     --model temporal \
     --data /path/to/sequences \
-    --spatial-weights checkpoints/residual/best.pth \
+    --spatial-weights checkpoints/spatial/best.pth \
     --resume checkpoints/temporal_stage2/best.pth \
     --lr 5e-5 \
     --output checkpoints/temporal_stage3 \
@@ -620,10 +668,10 @@ file is produced with non-zero size.
 
 ```bash
 uv run python export.py \
-    --checkpoint checkpoints/residual_standard/best.pth \
-    --model residual \
+    --checkpoint checkpoints/spatial_standard/best.pth \
+    --model spatial \
     --size standard \
-    --output weights/residual_standard \
+    --output weights/spatial_standard \
     --dtype float16 \
     --verify
 ```
@@ -644,20 +692,20 @@ cd training
 
 # Single image
 uv run python infer.py \
-    --checkpoint checkpoints/residual_standard/best.pth \
+    --checkpoint checkpoints/spatial_standard/best.pth \
     --input photo.png \
     --output photo_denoised.png
 
 # Directory of images, with PSNR/SSIM against clean reference
 uv run python infer.py \
-    --checkpoint checkpoints/residual_standard/best.pth \
+    --checkpoint checkpoints/spatial_standard/best.pth \
     --input noisy_images/ \
     --clean clean_images/ \
     --output denoised/
 
 # Tiled inference for large images
 uv run python infer.py \
-    --checkpoint checkpoints/residual_standard/best.pth \
+    --checkpoint checkpoints/spatial_standard/best.pth \
     --input photo_4k.png \
     --tile 512 \
     --output photo_4k_denoised.png
@@ -677,25 +725,25 @@ uv run python infer.py \
 ```bash
 # Single image
 ./build/nef_denoise \
-    --model weights/residual_standard/manifest.json \
+    --model weights/spatial_standard/manifest.json \
     --input photo.png \
     --output photo_denoised.png
 
 # Image directory
 ./build/nef_denoise \
-    --model weights/residual_standard/manifest.json \
+    --model weights/spatial_standard/manifest.json \
     --input frames/ \
     --output frames_denoised/
 
 # Video (requires ffmpeg on PATH)
 ./build/nef_denoise \
-    --model weights/residual_standard/manifest.json \
+    --model weights/spatial_standard/manifest.json \
     --input clip.mp4 \
     --output clip_denoised.mp4
 
 # EXR (HDR, linear values preserved)
 ./build/nef_denoise \
-    --model weights/residual_standard/manifest.json \
+    --model weights/spatial_standard/manifest.json \
     --input render.exr \
     --output render_denoised.exr
 ```

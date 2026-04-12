@@ -60,6 +60,86 @@ def _collect_images(dirs: Sequence[str | Path]) -> list[Path]:
     return sorted(set(paths))
 
 
+def _spread_indices(n: int, count: int) -> list[int]:
+    """Return *count* evenly spread indices into a sequence of length *n*.
+
+    Uses integer linspace so first and last indices are always included.
+    If count >= n, returns all indices.
+
+    Examples::
+
+        _spread_indices(90, 3) → [0, 44, 89]
+        _spread_indices(90, 5) → [0, 22, 44, 67, 89]
+        _spread_indices(3,  5) → [0, 1, 2]
+    """
+    if count >= n:
+        return list(range(n))
+    return [int(round(i * (n - 1) / (count - 1))) for i in range(count)]
+
+
+def _collect_images_spread(
+    dirs: Sequence[str | Path],
+    frames_per_sequence: Optional[int],
+) -> tuple[list[Path], bool]:
+    """Collect image files from *dirs*, optionally spread per sequence subdir.
+
+    If *frames_per_sequence* is set:
+    - Each subdirectory is treated as one sequence; N evenly spread frames
+      are selected from it.
+    - Flat directories (no image-containing subdirs) fall back to all images
+      with a warning.
+
+    Returns:
+        (paths, flat_fallback) where flat_fallback is True if a flat directory
+        was encountered and the limit was ignored.
+    """
+    if frames_per_sequence is None:
+        return _collect_images(dirs), False
+
+    paths: list[Path] = []
+    flat_fallback = False
+
+    for d in dirs:
+        root = Path(d)
+        if not root.exists():
+            raise FileNotFoundError(f"Image directory not found: {root}")
+
+        # Collect subdirs that contain images
+        seq_dirs = sorted(sub for sub in root.iterdir() if sub.is_dir())
+        seq_frames: list[list[Path]] = []
+        for sub in seq_dirs:
+            frames = sorted(
+                p for p in sub.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS
+            )
+            if frames:
+                seq_frames.append(frames)
+
+        if seq_frames:
+            # Sequence-folder structure: spread N frames per sequence
+            for frames in seq_frames:
+                indices = _spread_indices(len(frames), frames_per_sequence)
+                paths.extend(frames[i] for i in indices)
+        else:
+            # Flat directory — warn and use all images
+            flat_imgs = sorted(
+                p for p in root.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS
+            )
+            if flat_imgs:
+                import warnings
+                warnings.warn(
+                    f"--frames-per-sequence has no effect on flat directory {root} "
+                    "(no sequence subdirectories found). Using all {len(flat_imgs)} images.",
+                    UserWarning,
+                    stacklevel=4,
+                )
+                paths.extend(flat_imgs)
+                flat_fallback = True
+            else:
+                raise ValueError(f"No images found in: {root}")
+
+    return sorted(set(paths)), flat_fallback
+
+
 def _match_named_images(clean_paths: Sequence[Path], noisy_paths: Sequence[Path]) -> list[tuple[Path, Path]]:
     """Match image paths by stem and raise on missing / extra names."""
     clean_by_stem = {p.stem: p for p in clean_paths}
@@ -230,6 +310,12 @@ class PatchDataset(Dataset):
     (patch_size × patch_size) crop, applies noise via *noise_generator*, and
     returns (noisy_patch, clean_patch, sigma_map).
 
+    Supports sequence folder structures (subdirectories of frames) via
+    *frames_per_sequence*: N evenly spread frames are selected from each
+    subdirectory instead of using every frame.  This keeps epoch size
+    manageable for long sequences.  Flat directories (no subdirs) fall back
+    to all images with a warning.
+
     Args:
         image_dirs: One or more directories containing clean training images.
             Subdirectories are searched recursively.
@@ -243,6 +329,9 @@ class PatchDataset(Dataset):
         crop_mode: Spatial crop mode. One of ``"random"``, ``"center"``,
             ``"full"``, or ``"grid"``.
         crop_grid_size: Grid side length used when ``crop_mode="grid"``.
+        frames_per_sequence: If set, select this many evenly spread frames
+            from each sequence subdirectory.  First and last frames are
+            always included.  Ignored (with a warning) for flat directories.
     """
 
     def __init__(
@@ -254,8 +343,9 @@ class PatchDataset(Dataset):
         augment: bool = True,
         crop_mode: str = "random",
         crop_grid_size: int = 2,
+        frames_per_sequence: Optional[int] = None,
     ) -> None:
-        self._paths = _collect_images(image_dirs)
+        self._paths, _ = _collect_images_spread(image_dirs, frames_per_sequence)
         if not self._paths:
             raise ValueError(f"No images found in: {list(image_dirs)}")
         self._noise_gen = noise_generator or MixedNoiseGenerator.default()
@@ -525,15 +615,24 @@ def _local_std_sigma(noise: Tensor, window: int = 7) -> Tensor:
 
 
 def _match_pairs(
-    clean_dir: Path, noisy_dir: Path, match_by_name: bool
+    clean_dir: Path,
+    noisy_dir: Path,
+    match_by_name: bool,
+    frames_per_sequence: Optional[int] = None,
 ) -> list[tuple[Path, Path]]:
     """Collect matched (clean, noisy) image path pairs from two directories.
+
+    When *frames_per_sequence* is set, N evenly spread frames are selected
+    from each sequence subdirectory in *clean_dir*; the matching noisy paths
+    are derived from those same stems/positions.
 
     Args:
         clean_dir: Root directory of clean images (searched recursively).
         noisy_dir: Root directory of noisy images (searched recursively).
         match_by_name: If True, match files whose stems are identical.
             If False, match by sorted position — clean[i] ↔ noisy[i].
+        frames_per_sequence: If set, evenly spread N frames per sequence
+            subdirectory.
 
     Returns:
         Sorted list of (clean_path, noisy_path) pairs.
@@ -541,7 +640,7 @@ def _match_pairs(
     Raises:
         ValueError: If no pairs are found or counts differ (position matching).
     """
-    clean_paths = _collect_images([clean_dir])
+    clean_paths, _ = _collect_images_spread([clean_dir], frames_per_sequence)
     noisy_paths = _collect_images([noisy_dir])
 
     if not clean_paths:
@@ -588,6 +687,10 @@ class PairedPatchDataset(Dataset):
     sigma_map is estimated from the actual noise residual |noisy − clean|
     using a local sliding-window standard deviation.
 
+    Supports sequence folder structures via *frames_per_sequence*: N evenly
+    spread frames are selected from each subdirectory in *clean_dir*; matching
+    noisy frames are resolved by the same stem/position logic.
+
     Args:
         clean_dir: Directory of clean (ground-truth) images.
         noisy_dir: Directory of matching noisy images.
@@ -600,6 +703,9 @@ class PairedPatchDataset(Dataset):
         crop_mode: Spatial crop mode. One of ``"random"``, ``"center"``,
             ``"full"``, or ``"grid"``.
         crop_grid_size: Grid side length used when ``crop_mode="grid"``.
+        frames_per_sequence: If set, select N evenly spread frames per
+            sequence subdirectory.  Flat directories fall back to all images
+            with a warning.
 
     Example directory layout (match_by_name=True)::
 
@@ -610,10 +716,14 @@ class PairedPatchDataset(Dataset):
           scene_001.png   ← same stem as clean counterpart
           scene_002.png
 
-    Example layout (match_by_name=False, sorted position)::
+    Example layout (sequence folders + frames_per_sequence=3)::
 
-        clean/  frame_0001.png  frame_0002.png …
-        noisy/  frame_0001.png  frame_0002.png …
+        clean/
+          scene_001/  frame_0001.png … frame_0090.png  → picks 3 spread frames
+          scene_002/  frame_0001.png … frame_0060.png  → picks 3 spread frames
+        noisy/
+          scene_001/  frame_0001.png …
+          scene_002/  frame_0001.png …
     """
 
     def __init__(
@@ -627,8 +737,11 @@ class PairedPatchDataset(Dataset):
         sigma_window: int = 7,
         crop_mode: str = "random",
         crop_grid_size: int = 2,
+        frames_per_sequence: Optional[int] = None,
     ) -> None:
-        self._pairs = _match_pairs(Path(clean_dir), Path(noisy_dir), match_by_name)
+        self._pairs = _match_pairs(
+            Path(clean_dir), Path(noisy_dir), match_by_name, frames_per_sequence
+        )
         self._patch_size = patch_size
         self._patches_per_image = patches_per_image
         self._augment = augment

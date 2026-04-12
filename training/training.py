@@ -11,16 +11,16 @@ Supports:
 
 Stage 1 — train spatial model:
     uv run python training.py \\
-        --model residual \\
+        --model spatial \\
         --data /path/to/clean/images \\
-        --output checkpoints/residual \\
+        --output checkpoints/spatial \\
         --epochs 300
 
 Stage 2 — load spatial weights, train temporal components only:
     uv run python training.py \\
         --model temporal \\
         --data /path/to/sequences \\
-        --spatial-weights checkpoints/residual/best.pth \\
+        --spatial-weights checkpoints/spatial/best.pth \\
         --freeze-spatial \\
         --output checkpoints/temporal_stage2 \\
         --epochs 100
@@ -29,7 +29,7 @@ Stage 3 — unfreeze all, fine-tune jointly at lower lr:
     uv run python training.py \\
         --model temporal \\
         --data /path/to/sequences \\
-        --spatial-weights checkpoints/residual/best.pth \\
+        --spatial-weights checkpoints/spatial/best.pth \\
         --resume checkpoints/temporal_stage2/best.pth \\
         --output checkpoints/temporal_stage3 \\
         --lr 5e-5 \\
@@ -37,26 +37,26 @@ Stage 3 — unfreeze all, fine-tune jointly at lower lr:
 
 Usage — synthetic noise only:
     uv run python training.py \\
-        --model residual \\
+        --model spatial \\
         --data /path/to/clean/images \\
-        --output checkpoints/residual_standard \\
+        --output checkpoints/spatial_standard \\
         --epochs 300
 
 Usage — paired data only:
     uv run python training.py \\
-        --model residual \\
+        --model spatial \\
         --paired-clean /path/to/clean \\
         --paired-noisy /path/to/noisy \\
-        --output checkpoints/residual_paired
+        --output checkpoints/spatial_paired
 
 Usage — mixed (60% synthetic, 40% paired):
     uv run python training.py \\
-        --model residual \\
+        --model spatial \\
         --data /path/to/clean/images \\
         --paired-clean /path/to/clean \\
         --paired-noisy /path/to/noisy \\
         --paired-weight 0.4 \\
-        --output checkpoints/residual_mixed
+        --output checkpoints/spatial_mixed
 """
 
 import argparse
@@ -389,8 +389,13 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
-    parser.add_argument("--model", choices=["residual", "temporal"], default="residual")
+    parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
     parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
+    parser.add_argument("--frames-per-sequence", type=int, default=None, metavar="N",
+                        help="For spatial training on sequence folder structures: select N evenly "
+                             "spread frames from each sequence subdirectory (first, spread, last). "
+                             "Requires --model spatial. Flat directories fall back to all images "
+                             "with a warning.")
     parser.add_argument("--spatial-weights", default=None, metavar="PATH",
                         help="Load encoder/bottleneck/decoder/head weights from a NEFResidual "
                              "checkpoint into NEFTemporal before training. Requires --model temporal.")
@@ -540,6 +545,20 @@ def _temporal_sampling_config(
     return random_windows, windows_per_sequence
 
 
+def _frames_per_sequence_config(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> Optional[int]:
+    """Validate and return --frames-per-sequence."""
+    if args.frames_per_sequence is None:
+        return None
+    if args.frames_per_sequence <= 0:
+        parser.error("--frames-per-sequence must be a positive integer.")
+    if args.model != "spatial":
+        parser.error("--frames-per-sequence requires --model spatial.")
+    return args.frames_per_sequence
+
+
 def _validation_temporal_config(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
@@ -570,6 +589,7 @@ def _config_summary_lines(
     is_temporal: bool,
     random_temporal_windows: bool,
     windows_per_sequence: Optional[int],
+    frames_per_sequence: Optional[int],
     val_mode: Optional[str],
     val_windows_per_sequence: Optional[int],
     val_crop_mode: str,
@@ -585,6 +605,8 @@ def _config_summary_lines(
             )
         else:
             lines.append("Train temporal sampling: all sliding windows")
+    elif frames_per_sequence is not None:
+        lines.append(f"Train spatial sampling: {frames_per_sequence} evenly spread frames/sequence")
 
     if val_mode is not None:
         if is_temporal:
@@ -662,6 +684,7 @@ def main() -> None:
     match_by_name = not args.no_name_match
     val_mode, val_sources = _validation_mode(args, parser)
     random_temporal_windows, windows_per_sequence = _temporal_sampling_config(args, parser)
+    frames_per_sequence = _frames_per_sequence_config(args, parser)
     val_windows_per_sequence, val_crop_mode, val_grid_size = _validation_temporal_config(
         args, parser, val_mode
     )
@@ -695,6 +718,7 @@ def main() -> None:
             augment=False if for_validation else True,
             crop_mode=val_crop_mode if for_validation else "random",
             crop_grid_size=val_grid_size,
+            frames_per_sequence=None if for_validation else frames_per_sequence,
         )
 
     def _make_paired_ds(
@@ -728,6 +752,7 @@ def main() -> None:
                 augment=False if for_validation else True,
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
+                frames_per_sequence=None if for_validation else frames_per_sequence,
             )
         # Multiple paired dirs → combine
         sub_datasets = [
@@ -739,6 +764,7 @@ def main() -> None:
                 augment=False if for_validation else True,
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
+                frames_per_sequence=None if for_validation else frames_per_sequence,
             )
             for c, n in zip(clean_dirs, noisy_dirs)
         ]
@@ -799,6 +825,7 @@ def main() -> None:
         is_temporal=is_temporal,
         random_temporal_windows=random_temporal_windows,
         windows_per_sequence=windows_per_sequence,
+        frames_per_sequence=frames_per_sequence,
         val_mode=val_mode,
         val_windows_per_sequence=val_windows_per_sequence,
         val_crop_mode=val_crop_mode,
