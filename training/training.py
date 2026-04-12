@@ -347,13 +347,19 @@ def build_parser() -> argparse.ArgumentParser:
     # Synthetic (clean-only) data
     parser.add_argument("--data", nargs="+", default=None, metavar="DIR",
                         help="Directory(ies) of clean images for synthetic noise training.")
-    parser.add_argument("--val-data", nargs="+", default=None, metavar="DIR")
+    parser.add_argument("--val-data", nargs="+", default=None, metavar="DIR",
+                        help="Directory(ies) of clean validation data for synthetic validation.")
     # Paired (real clean/noisy) data
     parser.add_argument("--paired-clean", nargs="+", default=None, metavar="DIR",
                         help="Directory(ies) of clean ground-truth images for paired training.")
     parser.add_argument("--paired-noisy", nargs="+", default=None, metavar="DIR",
                         help="Matching directory(ies) of real noisy images.  "
                              "Must have same number of entries as --paired-clean.")
+    parser.add_argument("--val-clean", nargs="+", default=None, metavar="DIR",
+                        help="Directory(ies) of clean ground-truth validation images.")
+    parser.add_argument("--val-noisy", nargs="+", default=None, metavar="DIR",
+                        help="Matching directory(ies) of real noisy validation images.  "
+                             "Must have same number of entries as --val-clean.")
     parser.add_argument("--paired-weight", type=float, default=0.5,
                         help="Fraction of each batch drawn from paired data when both "
                              "--data and --paired-clean are supplied (default: 0.5).")
@@ -403,6 +409,28 @@ def _make_noise_generator(
     )
 
 
+def _validation_mode(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[Optional[str], Optional[tuple[list[str], ...]]]:
+    """Validate validation flags and return the selected mode."""
+    has_synthetic_val = args.val_data is not None
+    has_paired_val = args.val_clean is not None or args.val_noisy is not None
+
+    if args.val_clean is not None and args.val_noisy is None:
+        parser.error("--val-clean requires --val-noisy.")
+    if args.val_noisy is not None and args.val_clean is None:
+        parser.error("--val-noisy requires --val-clean.")
+    if has_synthetic_val and has_paired_val:
+        parser.error("Use either --val-data or --val-clean/--val-noisy, not both.")
+
+    if has_synthetic_val:
+        return "synthetic", (args.val_data,)
+    if args.val_clean is not None and args.val_noisy is not None:
+        return "paired", (args.val_clean, args.val_noisy)
+    return None, None
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -417,6 +445,7 @@ def main() -> None:
     cfg_map = {"lite": ModelConfig.lite, "standard": ModelConfig.standard, "heavy": ModelConfig.heavy}
     config = cfg_map[args.size]()
     match_by_name = not args.no_name_match
+    val_mode, val_sources = _validation_mode(args, parser)
 
     noise_gen = _make_noise_generator(args, parser)
 
@@ -481,11 +510,15 @@ def main() -> None:
         print("Synthetic training only (no paired data)")
 
     # ------------------------------------------------------------------
-    # Build validation dataset (synthetic only — ground truth is clean)
+    # Build validation dataset
     # ------------------------------------------------------------------
     val_ds: Optional[Dataset] = None
-    if args.val_data:
-        val_ds = _make_synthetic_ds(args.val_data)
+    if val_mode == "synthetic":
+        (val_dirs,) = val_sources
+        val_ds = _make_synthetic_ds(val_dirs)
+    elif val_mode == "paired":
+        val_clean_dirs, val_noisy_dirs = val_sources
+        val_ds = _make_paired_ds(val_clean_dirs, val_noisy_dirs)
 
     model_instance = NEFTemporal(config) if is_temporal else NEFResidual(config)
 

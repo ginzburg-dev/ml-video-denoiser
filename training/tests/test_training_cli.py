@@ -7,7 +7,7 @@ from noise_generators import (
     MixedNoiseGenerator,
     PoissonGaussianNoiseGenerator,
 )
-from training import _make_noise_generator, build_parser
+from training import _make_noise_generator, _validation_mode, build_parser
 
 
 class TestTrainingCli:
@@ -43,3 +43,37 @@ class TestTrainingCli:
         ])
         with pytest.raises(SystemExit):
             _make_noise_generator(args, parser)
+
+    def test_synthetic_validation_mode_selected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--val-data", "val_images"])
+        assert _validation_mode(args, parser) == ("synthetic", (["val_images"],))
+
+    def test_paired_validation_mode_selected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--val-clean", "val_clean",
+            "--val-noisy", "val_noisy",
+        ])
+        assert _validation_mode(args, parser) == (
+            "paired",
+            (["val_clean"], ["val_noisy"]),
+        )
+
+    def test_mixed_validation_modes_are_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--val-data", "val_images",
+            "--val-clean", "val_clean",
+            "--val-noisy", "val_noisy",
+        ])
+        with pytest.raises(SystemExit):
+            _validation_mode(args, parser)
+
+    def test_val_clean_requires_val_noisy(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--val-clean", "val_clean"])
+        with pytest.raises(SystemExit):
+            _validation_mode(args, parser)

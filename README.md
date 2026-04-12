@@ -181,6 +181,44 @@ uv run python training.py \
     --noise-profile profiles/camera_iso1600.json
 ```
 
+### Temporal training with paired validation
+
+```bash
+uv run python training.py \
+    --paired-clean /path/to/train_clean \
+    --paired-noisy /path/to/train_noisy \
+    --val-clean /path/to/val_clean \
+    --val-noisy /path/to/val_noisy \
+    --size standard \
+    --model temporal \
+    --epochs 300
+```
+
+For `--model temporal`, both training and validation directories must be
+sequence roots whose immediate subdirectories are clips:
+
+```text
+val_clean/
+  scene_001/
+    frame_0001.exr
+    frame_0002.exr
+    ...
+val_noisy/
+  scene_001/
+    frame_0001.exr
+    frame_0002.exr
+    ...
+```
+
+### Checkpoints
+
+Training writes checkpoints under `--output` (default: `training/checkpoints/run`):
+
+- `final.pth` at the end of a successful run
+- `best.pth` when validation is enabled and validation PSNR improves
+- `epoch_XXXX.pth` every 50 epochs
+- `runs/` TensorBoard logs
+
 ### Noise profiling (from dark frames)
 
 ```bash
