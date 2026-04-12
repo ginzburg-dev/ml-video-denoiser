@@ -492,8 +492,23 @@ UserWarning: --frames-per-sequence has no effect on flat directory /path/to/data
 (no sequence subdirectories found). Using all 4200 images.
 ```
 
-`--frames-per-sequence` is not available for `--model temporal` — use
-`--windows-per-sequence` instead, which selects temporal clip windows.
+`--frames-per-sequence` controls training only.  Use `--val-frames-per-sequence`
+to apply the same spread selection to the validation dataset independently:
+
+```bash
+uv run python training.py \
+    --model spatial \
+    --data /path/to/sequences \
+    --frames-per-sequence 10 \
+    --val-data /path/to/val_sequences \
+    --val-frames-per-sequence 3 \
+    --output checkpoints/spatial \
+    --epochs 300
+```
+
+`--frames-per-sequence` and `--val-frames-per-sequence` are not available for
+`--model temporal` — use `--windows-per-sequence` and
+`--val-windows-per-sequence` instead.
 
 ### Two-stage temporal training
 

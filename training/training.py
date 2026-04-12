@@ -396,6 +396,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "spread frames from each sequence subdirectory (first, spread, last). "
                              "Requires --model spatial. Flat directories fall back to all images "
                              "with a warning.")
+    parser.add_argument("--val-frames-per-sequence", type=int, default=None, metavar="N",
+                        help="Same as --frames-per-sequence but applied to the validation dataset. "
+                             "Requires --model spatial and validation data.")
     parser.add_argument("--spatial-weights", default=None, metavar="PATH",
                         help="Load encoder/bottleneck/decoder/head weights from a NEFResidual "
                              "checkpoint into NEFTemporal before training. Requires --model temporal.")
@@ -548,15 +551,24 @@ def _temporal_sampling_config(
 def _frames_per_sequence_config(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
-) -> Optional[int]:
-    """Validate and return --frames-per-sequence."""
-    if args.frames_per_sequence is None:
-        return None
-    if args.frames_per_sequence <= 0:
-        parser.error("--frames-per-sequence must be a positive integer.")
-    if args.model != "spatial":
-        parser.error("--frames-per-sequence requires --model spatial.")
-    return args.frames_per_sequence
+) -> tuple[Optional[int], Optional[int]]:
+    """Validate and return (frames_per_sequence, val_frames_per_sequence)."""
+    fps = args.frames_per_sequence
+    val_fps = args.val_frames_per_sequence
+
+    if fps is not None:
+        if fps <= 0:
+            parser.error("--frames-per-sequence must be a positive integer.")
+        if args.model != "spatial":
+            parser.error("--frames-per-sequence requires --model spatial.")
+
+    if val_fps is not None:
+        if val_fps <= 0:
+            parser.error("--val-frames-per-sequence must be a positive integer.")
+        if args.model != "spatial":
+            parser.error("--val-frames-per-sequence requires --model spatial.")
+
+    return fps, val_fps
 
 
 def _validation_temporal_config(
@@ -590,6 +602,7 @@ def _config_summary_lines(
     random_temporal_windows: bool,
     windows_per_sequence: Optional[int],
     frames_per_sequence: Optional[int],
+    val_frames_per_sequence: Optional[int],
     val_mode: Optional[str],
     val_windows_per_sequence: Optional[int],
     val_crop_mode: str,
@@ -607,6 +620,9 @@ def _config_summary_lines(
             lines.append("Train temporal sampling: all sliding windows")
     elif frames_per_sequence is not None:
         lines.append(f"Train spatial sampling: {frames_per_sequence} evenly spread frames/sequence")
+
+    if not is_temporal and val_mode is not None and val_frames_per_sequence is not None:
+        lines.append(f"Val spatial sampling: {val_frames_per_sequence} evenly spread frames/sequence")
 
     if val_mode is not None:
         if is_temporal:
@@ -684,7 +700,7 @@ def main() -> None:
     match_by_name = not args.no_name_match
     val_mode, val_sources = _validation_mode(args, parser)
     random_temporal_windows, windows_per_sequence = _temporal_sampling_config(args, parser)
-    frames_per_sequence = _frames_per_sequence_config(args, parser)
+    frames_per_sequence, val_frames_per_sequence = _frames_per_sequence_config(args, parser)
     val_windows_per_sequence, val_crop_mode, val_grid_size = _validation_temporal_config(
         args, parser, val_mode
     )
@@ -718,7 +734,7 @@ def main() -> None:
             augment=False if for_validation else True,
             crop_mode=val_crop_mode if for_validation else "random",
             crop_grid_size=val_grid_size,
-            frames_per_sequence=None if for_validation else frames_per_sequence,
+            frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
         )
 
     def _make_paired_ds(
@@ -752,7 +768,7 @@ def main() -> None:
                 augment=False if for_validation else True,
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
-                frames_per_sequence=None if for_validation else frames_per_sequence,
+                frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
             )
         # Multiple paired dirs → combine
         sub_datasets = [
@@ -764,7 +780,7 @@ def main() -> None:
                 augment=False if for_validation else True,
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
-                frames_per_sequence=None if for_validation else frames_per_sequence,
+                frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
             )
             for c, n in zip(clean_dirs, noisy_dirs)
         ]
@@ -826,6 +842,7 @@ def main() -> None:
         random_temporal_windows=random_temporal_windows,
         windows_per_sequence=windows_per_sequence,
         frames_per_sequence=frames_per_sequence,
+        val_frames_per_sequence=val_frames_per_sequence,
         val_mode=val_mode,
         val_windows_per_sequence=val_windows_per_sequence,
         val_crop_mode=val_crop_mode,
