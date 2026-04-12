@@ -33,6 +33,7 @@ from typing import Optional, Sequence
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
 
@@ -61,20 +62,45 @@ def _collect_images(dirs: Sequence[str | Path]) -> list[Path]:
 
 def _load_image(path: Path) -> np.ndarray:
     """Load *path* as a float32 HWC array normalised to [0, 1]."""
-    import imageio.v3 as iio
+    if path.suffix.lower() == ".exr":
+        img = _load_exr_image(path)
+    else:
+        with Image.open(path) as pil_img:
+            img = np.array(pil_img)
 
-    img = iio.imread(str(path))
+    source_dtype = img.dtype
     img = img.astype(np.float32)
     if img.ndim == 2:
         img = img[:, :, np.newaxis]
     if img.shape[2] > 3:
         img = img[:, :, :3]  # drop alpha
 
-    # Normalise
-    if img.max() > 1.5:
+    # Normalize integer-backed images; float-backed inputs like EXR are assumed
+    # to already be in scene-linear units and are clipped to the model range.
+    if not np.issubdtype(source_dtype, np.floating) and img.max() > 1.5:
         dtype_max = 255.0 if img.max() <= 255.5 else 65535.0
         img /= dtype_max
-    return img
+    return np.clip(img, 0.0, 1.0)
+
+
+def _load_exr_image(path: Path) -> np.ndarray:
+    """Load an EXR image as float32 HWC using the bundled OpenEXR dependency."""
+    import OpenEXR
+
+    with OpenEXR.File(str(path)) as exr:
+        channels = exr.parts[0].channels
+        for key in ("RGBA", "RGB"):
+            channel = channels.get(key)
+            if channel is not None:
+                return np.asarray(channel.pixels, dtype=np.float32)
+
+        names = [name for name in ("R", "G", "B", "A", "Y") if name in channels]
+        if not names:
+            available = ", ".join(sorted(channels))
+            raise ValueError(f"Unsupported EXR channel layout in {path}: {available}")
+
+        planes = [np.asarray(channels[name].pixels, dtype=np.float32) for name in names]
+        return np.stack(planes, axis=-1)
 
 
 def _hwc_to_tensor(arr: np.ndarray) -> Tensor:
