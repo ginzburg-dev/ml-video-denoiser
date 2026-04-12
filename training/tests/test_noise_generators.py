@@ -34,9 +34,9 @@ def _assert_output_shape(noisy: Tensor, clean: Tensor, sigma_map: Tensor) -> Non
     assert sigma_map.shape == PATCH.shape
 
 
-def _assert_range(t: Tensor, lo: float = 0.0, hi: float = 1.0) -> None:
-    assert t.min().item() >= lo - 1e-5
-    assert t.max().item() <= hi + 1e-5
+def _assert_finite(t: Tensor) -> None:
+    """Noisy output must be finite — no clipping to [0,1] applied."""
+    assert torch.isfinite(t).all(), "noisy tensor contains NaN or Inf"
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ class TestGaussianNoiseGenerator:
     def test_noisy_in_range(self) -> None:
         gen = GaussianNoiseGenerator(0.0, 50.0 / 255.0)
         noisy, _, _ = gen(PATCH)
-        _assert_range(noisy)
+        _assert_finite(noisy)
 
     def test_sigma_map_uniform(self) -> None:
         gen = GaussianNoiseGenerator(10.0 / 255.0, 10.0 / 255.0)
@@ -95,7 +95,7 @@ class TestPoissonGaussianNoiseGenerator:
     def test_noisy_in_range(self) -> None:
         gen = PoissonGaussianNoiseGenerator()
         noisy, _, _ = gen(PATCH)
-        _assert_range(noisy)
+        _assert_finite(noisy)
 
     def test_sigma_map_positive(self) -> None:
         gen = PoissonGaussianNoiseGenerator()
@@ -135,7 +135,7 @@ class TestRealNoiseInjectionGenerator:
     def test_noisy_in_range(self, patch_pool_path: Path) -> None:
         gen = RealNoiseInjectionGenerator(str(patch_pool_path))
         noisy, _, _ = gen(PATCH)
-        _assert_range(noisy)
+        _assert_finite(noisy)
 
     def test_different_calls_differ(self, patch_pool_path: Path) -> None:
         gen = RealNoiseInjectionGenerator(str(patch_pool_path))
@@ -183,7 +183,7 @@ class TestRealRAWNoiseGenerator:
     def test_noisy_in_range(self, noise_profile_path: Path) -> None:
         gen = RealRAWNoiseGenerator(str(noise_profile_path))
         noisy, _, _ = gen(PATCH)
-        _assert_range(noisy)
+        _assert_finite(noisy)
 
     def test_empty_profile_raises(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.json"
@@ -210,7 +210,7 @@ class TestMixedNoiseGenerator:
     def test_noisy_in_range(self) -> None:
         gen = MixedNoiseGenerator.default()
         noisy, _, _ = gen(PATCH)
-        _assert_range(noisy)
+        _assert_finite(noisy)
 
     def test_weights_sum_to_one_two_generators(self) -> None:
         gen = MixedNoiseGenerator.default()

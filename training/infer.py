@@ -40,11 +40,12 @@ from models import ModelConfig, NEFResidual, NEFTemporal
 
 
 def compute_psnr(output: np.ndarray, clean: np.ndarray) -> float:
-    """Compute PSNR between two float32 images in [0, 1]."""
+    """Compute PSNR between two float32 images. Data range inferred from clean."""
     mse = np.mean((output.astype(np.float64) - clean.astype(np.float64)) ** 2)
     if mse == 0:
         return float("inf")
-    return 10.0 * math.log10(1.0 / mse)
+    data_range = float(clean.max() - clean.min()) or 1.0
+    return 10.0 * math.log10(data_range**2 / mse)
 
 
 def compute_ssim(output: np.ndarray, clean: np.ndarray) -> float:
@@ -90,17 +91,17 @@ def denoise_image(
     tile_size: int = 0,
     use_amp: bool = True,
 ) -> np.ndarray:
-    """Run the model on a single HWC float32 image in [0, 1].
+    """Run the model on a single HWC float32 image.
 
     Args:
         model: Trained denoiser (eval mode expected).
-        noisy: (H, W, C) float32 in [0, 1].
+        noisy: (H, W, C) float32.
         device: Target CUDA/CPU device.
         tile_size: Tile-based inference size (0 = full image).
         use_amp: Use AMP for FP16 inference.
 
     Returns:
-        Denoised image as (H, W, C) float32 in [0, 1].
+        Denoised image as (H, W, C) float32, same range as input.
     """
     h, w, c = noisy.shape
     x = torch.from_numpy(noisy.transpose(2, 0, 1)).unsqueeze(0).to(device)  # (1, C, H, W)
@@ -233,7 +234,7 @@ def _save_image(path: Path, img: np.ndarray, alpha: Optional[np.ndarray] = None)
     if path.suffix.lower() == ".exr":
         import OpenEXR
 
-        out = np.clip(img, 0.0, 1.0)
+        out = img.astype(np.float32)
         if out.ndim == 2:
             out = np.repeat(out[..., None], 3, axis=2)
         elif out.shape[-1] == 1:

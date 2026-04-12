@@ -73,9 +73,10 @@ class TestPatchDataset:
 
         img = _load_image(exr_path)
         assert img.shape == (8, 8, 3)
-        assert np.isclose(img[..., 0].mean(), 0.1)
-        assert np.isclose(img[..., 1].mean(), 0.2)
-        assert np.isclose(img[..., 2].mean(), 0.3)
+        # Display-referred EXR values pass through without any transform.
+        assert np.isclose(img[..., 0].mean(), 0.1, rtol=1e-4)
+        assert np.isclose(img[..., 1].mean(), 0.2, rtol=1e-4)
+        assert np.isclose(img[..., 2].mean(), 0.3, rtol=1e-4)
 
     def test_length(self, image_dir: Path) -> None:
         ds = PatchDataset([image_dir], patches_per_image=4, patch_size=64)
@@ -88,13 +89,11 @@ class TestPatchDataset:
         assert clean.shape == (3, 64, 64)
         assert sigma_map.shape == (3, 64, 64)
 
-    def test_item_in_range(self, image_dir: Path) -> None:
+    def test_item_finite(self, image_dir: Path) -> None:
         ds = PatchDataset([image_dir], patches_per_image=2, patch_size=64)
         noisy, clean, _ = ds[0]
-        assert noisy.min().item() >= 0.0
-        assert noisy.max().item() <= 1.0
-        assert clean.min().item() >= 0.0
-        assert clean.max().item() <= 1.0
+        assert torch.isfinite(noisy).all()
+        assert torch.isfinite(clean).all()
 
     def test_custom_noise_generator(self, image_dir: Path) -> None:
         gen = GaussianNoiseGenerator(10.0 / 255.0, 10.0 / 255.0)
@@ -173,11 +172,11 @@ class TestVideoSequenceDataset:
         assert clean.shape == (5, 3, 32, 32)
         assert sigma_map.shape == (5, 3, 32, 32)
 
-    def test_item_in_range(self, video_seq_dir: Path) -> None:
+    def test_item_finite(self, video_seq_dir: Path) -> None:
         ds = VideoSequenceDataset([video_seq_dir], num_frames=5, patches_per_clip=2, patch_size=32)
         noisy, clean, _ = ds[0]
-        assert noisy.min().item() >= 0.0
-        assert noisy.max().item() <= 1.0
+        assert torch.isfinite(noisy).all()
+        assert torch.isfinite(clean).all()
 
     def test_empty_dir_raises(self, tmp_path: Path) -> None:
         # Non-existent or empty sequence dirs → no clips → ValueError
@@ -335,12 +334,12 @@ class TestPairedPatchDataset:
         assert clean.shape    == (3, 64, 64)
         assert sigma_map.shape == (3, 64, 64)
 
-    def test_values_in_range(self, tmp_path: Path) -> None:
+    def test_values_finite(self, tmp_path: Path) -> None:
         clean_dir, noisy_dir = _write_paired_images(tmp_path)
         ds = PairedPatchDataset(clean_dir, noisy_dir, patch_size=64, patches_per_image=2)
         noisy, clean, sigma_map = ds[0]
-        assert noisy.min().item() >= 0.0
-        assert noisy.max().item() <= 1.0
+        assert torch.isfinite(noisy).all()
+        assert torch.isfinite(clean).all()
         assert sigma_map.min().item() >= 0.0
 
     def test_sigma_map_reflects_actual_noise(self, tmp_path: Path) -> None:
@@ -438,14 +437,14 @@ class TestPairedVideoSequenceDataset:
         assert clean.shape    == (5, 3, 32, 32)
         assert sigma_map.shape == (5, 3, 32, 32)
 
-    def test_values_in_range(self, tmp_path: Path) -> None:
+    def test_values_finite(self, tmp_path: Path) -> None:
         clean_root, noisy_root = _write_paired_sequences(tmp_path)
         ds = PairedVideoSequenceDataset(
             [clean_root], [noisy_root], num_frames=5, patches_per_clip=2, patch_size=32
         )
         noisy, clean, _ = ds[0]
-        assert noisy.min().item() >= 0.0
-        assert noisy.max().item() <= 1.0
+        assert torch.isfinite(noisy).all()
+        assert torch.isfinite(clean).all()
 
     def test_unmatched_roots_raise(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="same length"):

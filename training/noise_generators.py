@@ -37,7 +37,7 @@ class NoiseGenerator(Protocol):
         (noisy, clean, sigma_map)
 
     where sigma_map[c, h, w] is the local noise standard deviation estimate
-    at channel c, pixel (h, w).  Values are in [0, 1] (float32).
+    at channel c, pixel (h, w).  Values are float32; no clamping applied.
     """
 
     def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]: ...
@@ -67,7 +67,7 @@ class GaussianNoiseGenerator:
         """Apply AWGN to *clean* and return (noisy, clean, sigma_map)."""
         sigma = random.uniform(self.sigma_min, self.sigma_max)
         noise = torch.randn_like(clean) * sigma
-        noisy = (clean + noise).clamp(0.0, 1.0)
+        noisy = clean + noise
         sigma_map = torch.full_like(clean, sigma)
         return noisy, clean, sigma_map
 
@@ -116,7 +116,7 @@ class PoissonGaussianNoiseGenerator:
         shot = torch.poisson(clean / k) * k - clean
         read = torch.randn_like(clean) * sigma_r
 
-        noisy = (clean + shot + read).clamp(0.0, 1.0)
+        noisy = clean + shot + read
         sigma_map = (k * clean + sigma_r**2).sqrt()
         return noisy, clean, sigma_map
 
@@ -180,7 +180,7 @@ class RealNoiseInjectionGenerator:
             noise = noise[:c] if pc > c else noise.mean(0, keepdim=True).expand(c, -1, -1)
 
         noise = noise.to(clean.device)
-        noisy = (clean + noise).clamp(0.0, 1.0)
+        noisy = clean + noise
         sigma_map = self._local_std(noise.unsqueeze(0)).squeeze(0)
         return noisy, clean, sigma_map
 
@@ -238,7 +238,7 @@ class RealRAWNoiseGenerator:
 
         shot = torch.poisson(clean / k) * k - clean
         read = torch.randn_like(clean) * sigma_r
-        noisy = (clean + shot + read).clamp(0.0, 1.0)
+        noisy = clean + shot + read
         sigma_map = (k * clean + sigma_r**2).sqrt()
         return noisy, clean, sigma_map
 

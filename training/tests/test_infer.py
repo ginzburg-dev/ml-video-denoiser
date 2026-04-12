@@ -22,9 +22,10 @@ class TestInferImageLoading:
 
         img = _load_image(exr_path)
         assert img.shape == (8, 8, 3)
-        assert np.isclose(img[..., 0].mean(), 0.1)
-        assert np.isclose(img[..., 1].mean(), 0.2)
-        assert np.isclose(img[..., 2].mean(), 0.3)
+        # Display-referred EXR values pass through without any transform.
+        assert np.isclose(img[..., 0].mean(), 0.1, rtol=1e-4)
+        assert np.isclose(img[..., 1].mean(), 0.2, rtol=1e-4)
+        assert np.isclose(img[..., 2].mean(), 0.3, rtol=1e-4)
 
     def test_save_exr_image(self, tmp_path: Path) -> None:
         exr_path = tmp_path / "out.exr"

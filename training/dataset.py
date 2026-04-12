@@ -84,38 +84,34 @@ def _match_named_images(clean_paths: Sequence[Path], noisy_paths: Sequence[Path]
 
 
 def _load_image(path: Path) -> np.ndarray:
-    """Load *path* as a float32 HWC array normalised to [0, 1].
+    """Load *path* as a float32 HWC array.
 
-    All PIL image modes (CMYK, P, RGBA, LA, I, …) are converted to plain RGB
-    before the array is extracted, guaranteeing a (H, W, 3) uint8 layout and
-    preventing channel-order colour shifts on CMYK JPEGs, palette PNGs, or
-    images with pre-multiplied alpha.
+    EXR: values passed through as-is (float32, any range).
+    LDR (PNG/JPG/TIFF): PIL converts to RGB, integer values divided by
+    255 or 65535 depending on bit depth.
     """
     if path.suffix.lower() == ".exr":
         img = _load_exr_image(path)
-        source_dtype = img.dtype
-    else:
-        with Image.open(path) as pil_img:
-            # Always convert to RGB so downstream code always sees (H, W, 3)
-            # uint8, regardless of source mode (palette, CMYK, RGBA, L, …).
-            img = np.array(pil_img.convert("RGB"))
-        source_dtype = img.dtype
+        img = img.astype(np.float32)
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        elif img.shape[2] == 1:
+            img = np.repeat(img, 3, axis=2)
+        elif img.shape[2] > 3:
+            img = img[:, :, :3]
+        return img
 
+    with Image.open(path) as pil_img:
+        # Always convert to RGB so downstream code always sees (H, W, 3)
+        # uint8, regardless of source mode (palette, CMYK, RGBA, L, …).
+        img = np.array(pil_img.convert("RGB"))
+
+    source_dtype = img.dtype
     img = img.astype(np.float32)
-    # EXR images may still be 2-D (single-channel) or have >3 planes.
-    if img.ndim == 2:
-        img = np.stack([img, img, img], axis=-1)
-    elif img.shape[2] == 1:
-        img = np.repeat(img, 3, axis=2)
-    elif img.shape[2] > 3:
-        img = img[:, :, :3]
-
-    # Normalize integer-backed images; float-backed inputs like EXR are assumed
-    # to already be in scene-linear units and are clipped to the model range.
-    if not np.issubdtype(source_dtype, np.floating) and img.max() > 1.5:
+    if img.max() > 1.5:
         dtype_max = 255.0 if img.max() <= 255.5 else 65535.0
         img /= dtype_max
-    return np.clip(img, 0.0, 1.0)
+    return img
 
 
 def _load_exr_image(path: Path) -> np.ndarray:

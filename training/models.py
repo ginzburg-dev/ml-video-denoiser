@@ -10,7 +10,7 @@ NEFTemporal
     convolution alignment stage that compensates for inter-frame motion
     before temporal feature aggregation.
 
-Both models accept images normalised to [0, 1] and return values in [0, 1].
+Both models accept float32 images and return float32 values. No clamping is applied — the full input range is preserved.
 """
 
 import math
@@ -235,17 +235,21 @@ class NEFResidual(nn.Module):
             self.decoders.append(DecoderBlock(in_ch=prev_ch, skip_ch=ch, out_ch=ch))
             prev_ch = ch
 
-        # Head: predict noise residual
+        # Head: predict noise residual.
+        # Zero-init weights and bias so the model starts as identity
+        # (predicted noise ≈ 0 at epoch 0), avoiding random channel bias.
         self.head = nn.Conv2d(enc_ch[0], out_ch, kernel_size=1)
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
 
     def forward(self, x: Tensor) -> Tensor:
         """Denoise *x*.
 
         Args:
-            x: (B, C, H, W) noisy image in [0, 1].
+            x: (B, C, H, W) noisy image (float32, any range).
 
         Returns:
-            Denoised image of shape (B, C, H, W), clamped to [0, 1].
+            Denoised image of shape (B, C, H, W), same range as input.
         """
         inp = x
         x, padding = _pad_to_multiple(x, self._pad_multiple)
@@ -265,7 +269,7 @@ class NEFResidual(nn.Module):
 
         # Predict noise, strip padding, subtract from original input
         noise = _unpad(self.head(x), padding)
-        return (inp - noise).clamp(0.0, 1.0)
+        return inp - noise
 
 
 # ---------------------------------------------------------------------------
@@ -425,17 +429,19 @@ class NEFTemporal(nn.Module):
             self.decoders.append(DecoderBlock(in_ch=prev_ch, skip_ch=ch, out_ch=ch))
             prev_ch = ch
 
-        # Head
+        # Head: zero-init for the same reason as NEFResidual.
         self.head = nn.Conv2d(enc_ch[0], out_ch, kernel_size=1)
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
 
     def forward(self, clip: Tensor) -> Tensor:
         """Denoise the centre frame of *clip*.
 
         Args:
-            clip: (B, T, C, H, W) tensor of T consecutive noisy frames in [0, 1].
+            clip: (B, T, C, H, W) tensor of T consecutive noisy frames (float32, any range).
 
         Returns:
-            Denoised centre frame (B, C, H, W), clamped to [0, 1].
+            Denoised centre frame (B, C, H, W), same range as input.
         """
         b, t, c, h, w = clip.shape
         assert t == self._num_frames, (
@@ -493,4 +499,4 @@ class NEFTemporal(nn.Module):
 
         # --- Head + residual ---
         noise = _unpad(self.head(x), padding)
-        return (ref_input - noise).clamp(0.0, 1.0)
+        return ref_input - noise
