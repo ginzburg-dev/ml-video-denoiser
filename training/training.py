@@ -392,8 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
     parser.add_argument("--naf-base", type=int, default=32, metavar="C",
                         help="Base channel count for NAFNet residual/temporal models (default: 32).  "
-                             "Overrides --naf-preset base_channels when both are given.")
-    parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
+                             "Overrides the selected preset base_channels when both are given.")
+    parser.add_argument("--size", choices=["tiny", "small", "standard", "wide"], default=None,
                         help="NAFNet size preset: tiny (~0.4M), small (~7M), standard (~24M), "
                              "wide (~67M).  When set, uses the preset block counts and "
                              "base_channels; --naf-base overrides the base_channels only.")
@@ -719,8 +719,8 @@ def main() -> None:
         "standard": NAFNetConfig.standard,
         "wide": NAFNetConfig.wide,
     }
-    naf_config = _naf_preset_map[args.naf_preset]() if args.naf_preset else NAFNetConfig(base_channels=args.naf_base)
-    if args.naf_preset and args.naf_base != 32:
+    naf_config = _naf_preset_map[args.size]() if args.size else NAFNetConfig(base_channels=args.naf_base)
+    if args.size and args.naf_base != 32:
         naf_config.base_channels = args.naf_base
     match_by_name = not args.no_name_match
     val_mode, val_sources = _validation_mode(args, parser)

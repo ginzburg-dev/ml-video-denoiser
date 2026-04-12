@@ -35,6 +35,16 @@ class _DummyDataset(Dataset):
 
 
 class TestTrainingCli:
+    def test_size_flag_selects_model_preset(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--size", "standard"])
+        assert args.size == "standard"
+
+    def test_naf_preset_flag_is_rejected(self) -> None:
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--data", "images", "--naf-preset", "standard"])
+
     def test_noise_flag_parses_explicitly(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["--data", "images", "--noise", "gaussian"])
