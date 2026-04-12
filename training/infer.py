@@ -28,6 +28,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from dataset import _load_image as _load_dataset_image
 from models import ModelConfig, NEFResidual, NEFTemporal
 
 
@@ -149,16 +150,7 @@ def _make_ramp(h: int, w: int, overlap: int, device: torch.device) -> Tensor:
 
 
 def _load_image(path: Path) -> np.ndarray:
-    import imageio.v3 as iio
-
-    img = iio.imread(str(path)).astype(np.float32)
-    if img.ndim == 2:
-        img = img[:, :, np.newaxis]
-    if img.shape[2] > 3:
-        img = img[:, :, :3]
-    if img.max() > 1.5:
-        img /= 255.0 if img.max() <= 255.5 else 65535.0
-    return img
+    return _load_dataset_image(path)
 
 
 def _save_image(path: Path, img: np.ndarray) -> None:
