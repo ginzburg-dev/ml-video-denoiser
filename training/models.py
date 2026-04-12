@@ -309,13 +309,19 @@ class DeformableAlignment(nn.Module):
         n_offset_ch = 2 * kernel_size * kernel_size * deform_groups
         n_mask_ch = kernel_size * kernel_size * deform_groups
 
-        # Offset + mask prediction head (takes concat of ref and neighbour)
+        # Offset + mask prediction head (takes concat of ref and neighbour).
+        # Zero-init so offsets start at 0 (no warp) and masks start at 0.5
+        # after sigmoid — identity alignment at epoch 0.
         self.offset_conv = nn.Conv2d(
             2 * channels, n_offset_ch, kernel_size, padding=pad, bias=True
         )
         self.mask_conv = nn.Conv2d(
             2 * channels, n_mask_ch, kernel_size, padding=pad, bias=True
         )
+        nn.init.zeros_(self.offset_conv.weight)
+        nn.init.zeros_(self.offset_conv.bias)
+        nn.init.zeros_(self.mask_conv.weight)
+        nn.init.zeros_(self.mask_conv.bias)
 
         # Main deformable convolution weight (same channels in/out)
         self.weight = nn.Parameter(
