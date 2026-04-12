@@ -375,6 +375,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--no-amp", action="store_true", help="Disable AMP.")
     parser.add_argument("--resume", default=None, metavar="PATH")
+    parser.add_argument(
+        "--val-windows-per-sequence",
+        type=int,
+        default=None,
+        metavar="N",
+        help="For temporal validation, keep N evenly spaced windows per sequence.",
+    )
+    parser.add_argument(
+        "--val-crop-mode",
+        choices=["center", "random", "full", "grid"],
+        default="random",
+        help="Validation crop mode. Use 'center' for deterministic crops or "
+             "'full' to validate full-resolution frames.",
+    )
+    parser.add_argument(
+        "--val-grid-size",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Validation grid side length when --val-crop-mode grid is used.",
+    )
+    parser.add_argument(
+        "--random-temporal-windows",
+        action="store_true",
+        help="For temporal training, sample random windows per sequence each epoch "
+             "instead of enumerating every sliding window.",
+    )
+    parser.add_argument(
+        "--windows-per-sequence",
+        type=int,
+        default=None,
+        metavar="N",
+        help="For temporal training with random windows enabled, draw N temporal "
+             "windows from each sequence per epoch.",
+    )
     # Synthetic noise options
     parser.add_argument(
         "--noise",
@@ -431,11 +466,60 @@ def _validation_mode(
     return None, None
 
 
+def _temporal_sampling_config(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[bool, Optional[int]]:
+    """Validate and normalize temporal random-window sampling options."""
+    random_windows = args.random_temporal_windows or args.windows_per_sequence is not None
+    windows_per_sequence = args.windows_per_sequence
+
+    if windows_per_sequence is not None and windows_per_sequence <= 0:
+        parser.error("--windows-per-sequence must be a positive integer.")
+
+    if random_windows and args.model != "temporal":
+        parser.error("--random-temporal-windows and --windows-per-sequence require --model temporal.")
+
+    if random_windows and windows_per_sequence is None:
+        windows_per_sequence = 1
+
+    return random_windows, windows_per_sequence
+
+
+def _validation_temporal_config(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    val_mode: Optional[str],
+) -> tuple[Optional[int], str, int]:
+    """Validate temporal validation sampling/crop options."""
+    if args.val_windows_per_sequence is not None:
+        if args.val_windows_per_sequence <= 0:
+            parser.error("--val-windows-per-sequence must be a positive integer.")
+        if args.model != "temporal":
+            parser.error("--val-windows-per-sequence requires --model temporal.")
+        if val_mode is None:
+            parser.error("--val-windows-per-sequence requires validation data.")
+    if args.val_grid_size <= 0:
+        parser.error("--val-grid-size must be a positive integer.")
+    return args.val_windows_per_sequence, args.val_crop_mode, args.val_grid_size
+
+
+def _validation_patch_repeats(crop_mode: str, grid_size: int) -> int:
+    """Return how many deterministic crops each validation item should use."""
+    if crop_mode == "grid":
+        return grid_size * grid_size
+    return 1
+
+
 def _dataset_summary_lines(name: str, dataset: Dataset) -> list[str]:
     """Return human-readable dataset statistics for startup logging."""
     lines = [f"{name}: {len(dataset)} samples/epoch"]
 
-    if hasattr(dataset, "num_images"):
+    if hasattr(dataset, "num_sequences"):
+        lines[0] += f" from {dataset.num_sequences} sequences"
+        if hasattr(dataset, "num_clips"):
+            lines[0] += f" ({dataset.num_clips} temporal windows)"
+    elif hasattr(dataset, "num_images"):
         lines[0] += f" from {dataset.num_images} images"
     elif hasattr(dataset, "num_clips"):
         lines[0] += f" from {dataset.num_clips} clips"
@@ -485,6 +569,11 @@ def main() -> None:
     config = cfg_map[args.size]()
     match_by_name = not args.no_name_match
     val_mode, val_sources = _validation_mode(args, parser)
+    random_temporal_windows, windows_per_sequence = _temporal_sampling_config(args, parser)
+    val_windows_per_sequence, val_crop_mode, val_grid_size = _validation_temporal_config(
+        args, parser, val_mode
+    )
+    val_patch_repeats = _validation_patch_repeats(val_crop_mode, val_grid_size)
 
     noise_gen = _make_noise_generator(args, parser)
 
@@ -493,40 +582,71 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Build training dataset
     # ------------------------------------------------------------------
-    def _make_synthetic_ds(dirs: list[str]) -> Dataset:
+    def _make_synthetic_ds(dirs: list[str], *, for_validation: bool = False) -> Dataset:
         if is_temporal:
             return VideoSequenceDataset(
                 dirs, noise_generator=noise_gen,
                 num_frames=config.num_frames, patch_size=64,
+                patches_per_clip=val_patch_repeats if for_validation else 16,
+                random_windows=random_temporal_windows and not for_validation,
+                windows_per_sequence=(
+                    windows_per_sequence if not for_validation else val_windows_per_sequence
+                ),
+                augment=False if for_validation else True,
+                crop_mode=val_crop_mode if for_validation else "random",
+                crop_grid_size=val_grid_size,
             )
         return PatchDataset(
             dirs, noise_generator=noise_gen,
-            patch_size=args.patch_size, patches_per_image=args.patches_per_image,
+            patch_size=args.patch_size,
+            patches_per_image=val_patch_repeats if for_validation else args.patches_per_image,
+            augment=False if for_validation else True,
+            crop_mode=val_crop_mode if for_validation else "random",
+            crop_grid_size=val_grid_size,
         )
 
-    def _make_paired_ds(clean_dirs: list[str], noisy_dirs: list[str]) -> Dataset:
+    def _make_paired_ds(
+        clean_dirs: list[str],
+        noisy_dirs: list[str],
+        *,
+        for_validation: bool = False,
+    ) -> Dataset:
         if len(clean_dirs) != len(noisy_dirs):
             parser.error("--paired-clean and --paired-noisy must have the same number of entries.")
         if is_temporal:
             return PairedVideoSequenceDataset(
                 clean_dirs, noisy_dirs,
                 num_frames=config.num_frames, patch_size=64,
+                patches_per_clip=val_patch_repeats if for_validation else 16,
+                random_windows=random_temporal_windows and not for_validation,
+                windows_per_sequence=(
+                    windows_per_sequence if not for_validation else val_windows_per_sequence
+                ),
+                augment=False if for_validation else True,
+                crop_mode=val_crop_mode if for_validation else "random",
+                crop_grid_size=val_grid_size,
             )
         # For spatial: pair each clean/noisy dir entry
         if len(clean_dirs) == 1:
             return PairedPatchDataset(
                 clean_dirs[0], noisy_dirs[0],
                 patch_size=args.patch_size,
-                patches_per_image=args.patches_per_image,
+                patches_per_image=val_patch_repeats if for_validation else args.patches_per_image,
                 match_by_name=match_by_name,
+                augment=False if for_validation else True,
+                crop_mode=val_crop_mode if for_validation else "random",
+                crop_grid_size=val_grid_size,
             )
         # Multiple paired dirs → combine
         sub_datasets = [
             PairedPatchDataset(
                 c, n,
                 patch_size=args.patch_size,
-                patches_per_image=args.patches_per_image,
+                patches_per_image=val_patch_repeats if for_validation else args.patches_per_image,
                 match_by_name=match_by_name,
+                augment=False if for_validation else True,
+                crop_mode=val_crop_mode if for_validation else "random",
+                crop_grid_size=val_grid_size,
             )
             for c, n in zip(clean_dirs, noisy_dirs)
         ]
@@ -554,10 +674,10 @@ def main() -> None:
     val_ds: Optional[Dataset] = None
     if val_mode == "synthetic":
         (val_dirs,) = val_sources
-        val_ds = _make_synthetic_ds(val_dirs)
+        val_ds = _make_synthetic_ds(val_dirs, for_validation=True)
     elif val_mode == "paired":
         val_clean_dirs, val_noisy_dirs = val_sources
-        val_ds = _make_paired_ds(val_clean_dirs, val_noisy_dirs)
+        val_ds = _make_paired_ds(val_clean_dirs, val_noisy_dirs, for_validation=True)
 
     model_instance = NEFTemporal(config) if is_temporal else NEFResidual(config)
 
@@ -565,10 +685,8 @@ def main() -> None:
         train_ds, batch_size=args.batch_size, shuffle=True,
         num_workers=args.workers, pin_memory=True, drop_last=True,
     )
-    val_loader = (
-        DataLoader(val_ds, batch_size=args.batch_size, num_workers=args.workers)
-        if val_ds else None
-    )
+    val_batch_size = 1 if val_ds is not None and val_crop_mode == "full" else args.batch_size
+    val_loader = DataLoader(val_ds, batch_size=val_batch_size, num_workers=args.workers) if val_ds else None
 
     _log_loader_summary("Train", train_ds, train_loader)
     if val_ds is not None and val_loader is not None:

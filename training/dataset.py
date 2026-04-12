@@ -124,6 +124,47 @@ def _random_crop(
     return img[top : top + patch_size, left : left + patch_size, :]
 
 
+def _center_crop(
+    img: np.ndarray, patch_size: int
+) -> np.ndarray:
+    """Return a centered (patch_size, patch_size, C) crop from *img*."""
+    h, w, _ = img.shape
+    if h < patch_size or w < patch_size:
+        pad_h = max(0, patch_size - h)
+        pad_w = max(0, patch_size - w)
+        img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+        h, w, _ = img.shape
+    top = (h - patch_size) // 2
+    left = (w - patch_size) // 2
+    return img[top : top + patch_size, left : left + patch_size, :]
+
+
+def _crop_image(
+    img: np.ndarray,
+    patch_size: int,
+    crop_mode: str,
+) -> np.ndarray:
+    """Crop *img* according to the requested mode."""
+    if crop_mode == "random":
+        return _random_crop(img, patch_size)
+    if crop_mode == "center":
+        return _center_crop(img, patch_size)
+    if crop_mode == "full":
+        return img
+    if crop_mode == "grid":
+        return _center_crop(img, patch_size)
+    raise ValueError(f"Unsupported crop_mode: {crop_mode}")
+
+
+def _grid_start(length: int, patch_size: int, grid_size: int, coord_index: int) -> int:
+    """Return a deterministic crop start for one grid coordinate."""
+    if grid_size <= 1 or length <= patch_size:
+        return 0
+    max_start = length - patch_size
+    starts = np.linspace(0, max_start, num=grid_size, dtype=int)
+    return int(starts[coord_index])
+
+
 def _pad_frame_to_shape(frame: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
     """Pad a frame on the bottom/right so it reaches the requested shape."""
     h, w, _ = frame.shape
@@ -168,6 +209,9 @@ class PatchDataset(Dataset):
             epoch.  This multiplies the effective dataset length without
             re-reading files.  (default: 64)
         augment: Whether to apply random flip / rotation augmentation.
+        crop_mode: Spatial crop mode. One of ``"random"``, ``"center"``,
+            ``"full"``, or ``"grid"``.
+        crop_grid_size: Grid side length used when ``crop_mode="grid"``.
     """
 
     def __init__(
@@ -177,6 +221,8 @@ class PatchDataset(Dataset):
         patch_size: int = 128,
         patches_per_image: int = 64,
         augment: bool = True,
+        crop_mode: str = "random",
+        crop_grid_size: int = 2,
     ) -> None:
         self._paths = _collect_images(image_dirs)
         if not self._paths:
@@ -185,14 +231,26 @@ class PatchDataset(Dataset):
         self._patch_size = patch_size
         self._patches_per_image = patches_per_image
         self._augment = augment
+        self._crop_mode = crop_mode
+        self._crop_grid_size = crop_grid_size
 
     def __len__(self) -> int:
         return len(self._paths) * self._patches_per_image
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         img_idx = idx // self._patches_per_image
+        patch_idx = idx % self._patches_per_image
         img = _load_image(self._paths[img_idx])
-        patch = _random_crop(img, self._patch_size)
+        if self._crop_mode == "grid":
+            img = _pad_frame_to_shape(img, max(img.shape[0], self._patch_size), max(img.shape[1], self._patch_size))
+            h, w, _ = img.shape
+            row = patch_idx // self._crop_grid_size
+            col = patch_idx % self._crop_grid_size
+            top = _grid_start(h, self._patch_size, self._crop_grid_size, row)
+            left = _grid_start(w, self._patch_size, self._crop_grid_size, col)
+            patch = img[top : top + self._patch_size, left : left + self._patch_size, :]
+        else:
+            patch = _crop_image(img, self._patch_size, self._crop_mode)
         if self._augment:
             patch = _augment(patch)
         clean = _hwc_to_tensor(patch)  # (C, H, W)
@@ -229,8 +287,15 @@ class VideoSequenceDataset(Dataset):
         patch_size: Spatial patch size (default: 64 — smaller than spatial
             because memory cost is num_frames ×).
         patches_per_clip: Virtual patches per clip per epoch (default: 16).
+        random_windows: If True, sample random temporal windows from each
+            sequence each epoch instead of enumerating every sliding window.
+        windows_per_sequence: Number of temporal windows to draw per sequence
+            per epoch when ``random_windows`` is enabled.
         augment: Random spatial flip / rotation (applied identically across
             all frames in the clip).
+        crop_mode: Spatial crop mode. One of ``"random"``, ``"center"``,
+            ``"full"``, or ``"grid"``.
+        crop_grid_size: Grid side length used when ``crop_mode="grid"``.
     """
 
     def __init__(
@@ -240,23 +305,43 @@ class VideoSequenceDataset(Dataset):
         num_frames: int = 5,
         patch_size: int = 64,
         patches_per_clip: int = 16,
+        random_windows: bool = False,
+        windows_per_sequence: Optional[int] = None,
         augment: bool = True,
+        crop_mode: str = "random",
+        crop_grid_size: int = 2,
     ) -> None:
-        self._clips = self._collect_clips(sequence_dirs, num_frames)
-        if not self._clips:
+        self._sequences = self._collect_sequences(sequence_dirs, num_frames)
+        if not self._sequences:
             raise ValueError(f"No frame sequences found in: {list(sequence_dirs)}")
         self._noise_gen = noise_generator or GaussianNoiseGenerator(0.0, 50.0 / 255.0)
         self._num_frames = num_frames
         self._patch_size = patch_size
         self._patches_per_clip = patches_per_clip
+        self._random_windows = random_windows
+        self._windows_per_sequence = windows_per_sequence or 1
         self._augment = augment
+        self._crop_mode = crop_mode
+        self._crop_grid_size = crop_grid_size
+        self._num_sequences = len(self._sequences)
+        if self._random_windows and self._windows_per_sequence <= 0:
+            raise ValueError("windows_per_sequence must be positive when random_windows is enabled")
+        self._clips = (
+            []
+            if self._random_windows
+            else self._enumerate_clips(
+                self._sequences,
+                num_frames,
+                windows_per_sequence=windows_per_sequence,
+            )
+        )
 
     @staticmethod
-    def _collect_clips(
+    def _collect_sequences(
         sequence_dirs: Sequence[str | Path], num_frames: int
     ) -> list[list[Path]]:
-        """Find all valid consecutive-frame windows across all sequence dirs."""
-        clips: list[list[Path]] = []
+        """Collect all frame sequences that are long enough for sampling."""
+        sequences: list[list[Path]] = []
         for seq_dir in sequence_dirs:
             root = Path(seq_dir)
             if not root.exists():
@@ -267,11 +352,44 @@ class VideoSequenceDataset(Dataset):
                 frames = sorted(
                     p for p in sub.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS
                 )
-                for i in range(len(frames) - num_frames + 1):
-                    clips.append(frames[i : i + num_frames])
+                if len(frames) >= num_frames:
+                    sequences.append(frames)
+        return sequences
+
+    @staticmethod
+    def _enumerate_clips(
+        sequences: Sequence[Sequence[Path]],
+        num_frames: int,
+        windows_per_sequence: Optional[int] = None,
+    ) -> list[list[Path]]:
+        """Expand every valid sliding window, optionally keeping a fixed subset."""
+        clips: list[list[Path]] = []
+        for frames in sequences:
+            n_windows = len(frames) - num_frames + 1
+            if windows_per_sequence is None or windows_per_sequence >= n_windows:
+                starts = range(n_windows)
+            else:
+                starts = np.linspace(0, n_windows - 1, num=windows_per_sequence, dtype=int)
+            for i in starts:
+                i = int(i)
+                clips.append(list(frames[i : i + num_frames]))
         return clips
 
+    def _sample_frame_paths(self, idx: int) -> list[Path]:
+        """Resolve dataset index to a concrete temporal window."""
+        if not self._random_windows:
+            clip_idx = idx // self._patches_per_clip
+            return self._clips[clip_idx]
+
+        windows_per_sequence = self._windows_per_sequence * self._patches_per_clip
+        sequence_idx = idx // windows_per_sequence
+        frames = self._sequences[sequence_idx]
+        start = random.randint(0, len(frames) - self._num_frames)
+        return list(frames[start : start + self._num_frames])
+
     def __len__(self) -> int:
+        if self._random_windows:
+            return self._num_sequences * self._windows_per_sequence * self._patches_per_clip
         return len(self._clips) * self._patches_per_clip
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
@@ -282,8 +400,7 @@ class VideoSequenceDataset(Dataset):
             clean_clip:  (T, C, H, W)
             sigma_map:   (T, C, H, W)
         """
-        clip_idx = idx // self._patches_per_clip
-        frame_paths = self._clips[clip_idx]
+        frame_paths = self._sample_frame_paths(idx)
 
         # Load all frames
         frames = [_load_image(p) for p in frame_paths]
@@ -293,8 +410,24 @@ class VideoSequenceDataset(Dataset):
         frames = [_pad_frame_to_shape(frame, target_h, target_w) for frame in frames]
 
         # Determine crop position once (same for all frames)
-        top = random.randint(0, target_h - ps)
-        left = random.randint(0, target_w - ps)
+        if self._crop_mode == "random":
+            top = random.randint(0, target_h - ps)
+            left = random.randint(0, target_w - ps)
+        elif self._crop_mode == "center":
+            top = (target_h - ps) // 2
+            left = (target_w - ps) // 2
+        elif self._crop_mode == "full":
+            top = 0
+            left = 0
+            ps = None
+        elif self._crop_mode == "grid":
+            grid_patch_idx = idx % self._patches_per_clip
+            row = grid_patch_idx // self._crop_grid_size
+            col = grid_patch_idx % self._crop_grid_size
+            top = _grid_start(target_h, ps, self._crop_grid_size, row)
+            left = _grid_start(target_w, ps, self._crop_grid_size, col)
+        else:
+            raise ValueError(f"Unsupported crop_mode: {self._crop_mode}")
         # Determine augmentation seed once
         flip_v = self._augment and random.random() < 0.5
         flip_h = self._augment and random.random() < 0.5
@@ -302,7 +435,7 @@ class VideoSequenceDataset(Dataset):
 
         noisy_frames, clean_frames, sigma_frames = [], [], []
         for frame in frames:
-            patch = frame[top : top + ps, left : left + ps, :]
+            patch = frame if ps is None else frame[top : top + ps, left : left + ps, :]
             if flip_v:
                 patch = patch[::-1, :, :]
             if flip_h:
@@ -325,7 +458,13 @@ class VideoSequenceDataset(Dataset):
 
     @property
     def num_clips(self) -> int:
+        if self._random_windows:
+            return self._num_sequences * self._windows_per_sequence
         return len(self._clips)
+
+    @property
+    def num_sequences(self) -> int:
+        return self._num_sequences
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +566,9 @@ class PairedPatchDataset(Dataset):
         match_by_name: If True (default), match pairs by file stem.
             If False, match by sorted position within each directory.
         sigma_window: Kernel size for the local sigma_map estimate (default: 7).
+        crop_mode: Spatial crop mode. One of ``"random"``, ``"center"``,
+            ``"full"``, or ``"grid"``.
+        crop_grid_size: Grid side length used when ``crop_mode="grid"``.
 
     Example directory layout (match_by_name=True)::
 
@@ -452,18 +594,23 @@ class PairedPatchDataset(Dataset):
         augment: bool = True,
         match_by_name: bool = True,
         sigma_window: int = 7,
+        crop_mode: str = "random",
+        crop_grid_size: int = 2,
     ) -> None:
         self._pairs = _match_pairs(Path(clean_dir), Path(noisy_dir), match_by_name)
         self._patch_size = patch_size
         self._patches_per_image = patches_per_image
         self._augment = augment
         self._sigma_window = sigma_window
+        self._crop_mode = crop_mode
+        self._crop_grid_size = crop_grid_size
 
     def __len__(self) -> int:
         return len(self._pairs) * self._patches_per_image
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         pair_idx = idx // self._patches_per_image
+        patch_idx = idx % self._patches_per_image
         clean_path, noisy_path = self._pairs[pair_idx]
 
         clean_img = _load_image(clean_path)
@@ -478,10 +625,31 @@ class PairedPatchDataset(Dataset):
             clean_img = np.pad(clean_img, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
             noisy_img = np.pad(noisy_img, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
             h, w, _ = clean_img.shape
-        top  = random.randint(0, h - ps)
-        left = random.randint(0, w - ps)
-        clean_patch = clean_img[top : top + ps, left : left + ps, :]
-        noisy_patch = noisy_img[top : top + ps, left : left + ps, :]
+        if self._crop_mode == "full":
+            target_h = max(clean_img.shape[0], noisy_img.shape[0])
+            target_w = max(clean_img.shape[1], noisy_img.shape[1])
+            clean_patch = _pad_frame_to_shape(clean_img, target_h, target_w)
+            noisy_patch = _pad_frame_to_shape(noisy_img, target_h, target_w)
+        else:
+            target_h = max(clean_img.shape[0], noisy_img.shape[0], ps)
+            target_w = max(clean_img.shape[1], noisy_img.shape[1], ps)
+            clean_img = _pad_frame_to_shape(clean_img, target_h, target_w)
+            noisy_img = _pad_frame_to_shape(noisy_img, target_h, target_w)
+            if self._crop_mode == "random":
+                top = random.randint(0, target_h - ps)
+                left = random.randint(0, target_w - ps)
+            elif self._crop_mode == "center":
+                top = (target_h - ps) // 2
+                left = (target_w - ps) // 2
+            elif self._crop_mode == "grid":
+                row = patch_idx // self._crop_grid_size
+                col = patch_idx % self._crop_grid_size
+                top = _grid_start(target_h, ps, self._crop_grid_size, row)
+                left = _grid_start(target_w, ps, self._crop_grid_size, col)
+            else:
+                raise ValueError(f"Unsupported crop_mode: {self._crop_mode}")
+            clean_patch = clean_img[top : top + ps, left : left + ps, :]
+            noisy_patch = noisy_img[top : top + ps, left : left + ps, :]
 
         # Identical augmentation for both images
         if self._augment:
@@ -547,8 +715,15 @@ class PairedVideoSequenceDataset(Dataset):
         num_frames: Temporal window length (default: 5).
         patch_size: Spatial patch size (default: 64).
         patches_per_clip: Virtual patches per clip per epoch (default: 16).
+        random_windows: If True, sample random temporal windows from each
+            paired sequence each epoch instead of enumerating all windows.
+        windows_per_sequence: Number of temporal windows to draw per paired
+            sequence per epoch when ``random_windows`` is enabled.
         augment: Spatially consistent flip / rotation across all frames.
         sigma_window: Kernel size for sigma_map estimation (default: 7).
+        crop_mode: Spatial crop mode. One of ``"random"``, ``"center"``,
+            ``"full"``, or ``"grid"``.
+        crop_grid_size: Grid side length used when ``crop_mode="grid"``.
     """
 
     def __init__(
@@ -558,34 +733,54 @@ class PairedVideoSequenceDataset(Dataset):
         num_frames: int = 5,
         patch_size: int = 64,
         patches_per_clip: int = 16,
+        random_windows: bool = False,
+        windows_per_sequence: Optional[int] = None,
         augment: bool = True,
         sigma_window: int = 7,
+        crop_mode: str = "random",
+        crop_grid_size: int = 2,
     ) -> None:
         if len(clean_sequence_dirs) != len(noisy_sequence_dirs):
             raise ValueError(
                 "clean_sequence_dirs and noisy_sequence_dirs must have the same length"
             )
-        self._clips = self._collect_paired_clips(
+        self._sequences = self._collect_paired_sequences(
             clean_sequence_dirs, noisy_sequence_dirs, num_frames
         )
-        if not self._clips:
+        if not self._sequences:
             raise ValueError(
                 f"No paired frame sequences found in: {list(clean_sequence_dirs)}"
             )
         self._num_frames  = num_frames
         self._patch_size  = patch_size
         self._patches_per_clip = patches_per_clip
+        self._random_windows = random_windows
+        self._windows_per_sequence = windows_per_sequence or 1
         self._augment     = augment
         self._sigma_window = sigma_window
+        self._crop_mode = crop_mode
+        self._crop_grid_size = crop_grid_size
+        self._num_sequences = len(self._sequences)
+        if self._random_windows and self._windows_per_sequence <= 0:
+            raise ValueError("windows_per_sequence must be positive when random_windows is enabled")
+        self._clips = (
+            []
+            if self._random_windows
+            else self._enumerate_paired_clips(
+                self._sequences,
+                num_frames,
+                windows_per_sequence=windows_per_sequence,
+            )
+        )
 
     @staticmethod
-    def _collect_paired_clips(
+    def _collect_paired_sequences(
         clean_roots: Sequence[str | Path],
         noisy_roots: Sequence[str | Path],
         num_frames: int,
     ) -> list[tuple[list[Path], list[Path]]]:
-        """Collect all (clean_clip, noisy_clip) windows from matching sub-dirs."""
-        clips: list[tuple[list[Path], list[Path]]] = []
+        """Collect all paired sequences that are long enough for sampling."""
+        sequences: list[tuple[list[Path], list[Path]]] = []
         for clean_root, noisy_root in zip(clean_roots, noisy_roots):
             clean_root = Path(clean_root)
             noisy_root = Path(noisy_root)
@@ -606,20 +801,53 @@ class PairedVideoSequenceDataset(Dataset):
                     if p.suffix.lower() in _IMAGE_EXTENSIONS
                 )
                 n = min(len(clean_frames), len(noisy_frames))
-                for i in range(n - num_frames + 1):
-                    clips.append((
-                        clean_frames[i : i + num_frames],
-                        noisy_frames[i : i + num_frames],
-                    ))
+                if n >= num_frames:
+                    sequences.append((clean_frames[:n], noisy_frames[:n]))
+        return sequences
+
+    @staticmethod
+    def _enumerate_paired_clips(
+        sequences: Sequence[tuple[Sequence[Path], Sequence[Path]]],
+        num_frames: int,
+        windows_per_sequence: Optional[int] = None,
+    ) -> list[tuple[list[Path], list[Path]]]:
+        """Expand every valid sliding window, optionally keeping a fixed subset."""
+        clips: list[tuple[list[Path], list[Path]]] = []
+        for clean_frames, noisy_frames in sequences:
+            n_windows = len(clean_frames) - num_frames + 1
+            if windows_per_sequence is None or windows_per_sequence >= n_windows:
+                starts = range(n_windows)
+            else:
+                starts = np.linspace(0, n_windows - 1, num=windows_per_sequence, dtype=int)
+            for i in starts:
+                i = int(i)
+                clips.append((
+                    list(clean_frames[i : i + num_frames]),
+                    list(noisy_frames[i : i + num_frames]),
+                ))
         return clips
 
+    def _sample_frame_paths(self, idx: int) -> tuple[list[Path], list[Path]]:
+        """Resolve dataset index to a concrete paired temporal window."""
+        if not self._random_windows:
+            clip_idx = idx // self._patches_per_clip
+            return self._clips[clip_idx]
+
+        windows_per_sequence = self._windows_per_sequence * self._patches_per_clip
+        sequence_idx = idx // windows_per_sequence
+        clean_frames, noisy_frames = self._sequences[sequence_idx]
+        start = random.randint(0, len(clean_frames) - self._num_frames)
+        end = start + self._num_frames
+        return list(clean_frames[start:end]), list(noisy_frames[start:end])
+
     def __len__(self) -> int:
+        if self._random_windows:
+            return self._num_sequences * self._windows_per_sequence * self._patches_per_clip
         return len(self._clips) * self._patches_per_clip
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         """Return (noisy_clip, clean_clip, sigma_map) each shaped (T, C, H, W)."""
-        clip_idx = idx // self._patches_per_clip
-        clean_paths, noisy_paths = self._clips[clip_idx]
+        clean_paths, noisy_paths = self._sample_frame_paths(idx)
 
         ps = self._patch_size
         clean_imgs = [_load_image(path) for path in clean_paths]
@@ -637,8 +865,24 @@ class PairedVideoSequenceDataset(Dataset):
         clean_imgs = [_pad_frame_to_shape(img, target_h, target_w) for img in clean_imgs]
         noisy_imgs = [_pad_frame_to_shape(img, target_h, target_w) for img in noisy_imgs]
 
-        top = random.randint(0, target_h - ps)
-        left = random.randint(0, target_w - ps)
+        if self._crop_mode == "random":
+            top = random.randint(0, target_h - ps)
+            left = random.randint(0, target_w - ps)
+        elif self._crop_mode == "center":
+            top = (target_h - ps) // 2
+            left = (target_w - ps) // 2
+        elif self._crop_mode == "full":
+            top = 0
+            left = 0
+            ps = None
+        elif self._crop_mode == "grid":
+            grid_patch_idx = idx % self._patches_per_clip
+            row = grid_patch_idx // self._crop_grid_size
+            col = grid_patch_idx % self._crop_grid_size
+            top = _grid_start(target_h, ps, self._crop_grid_size, row)
+            left = _grid_start(target_w, ps, self._crop_grid_size, col)
+        else:
+            raise ValueError(f"Unsupported crop_mode: {self._crop_mode}")
 
         # Consistent augmentation across all frames
         flip_v = self._augment and random.random() < 0.5
@@ -647,8 +891,12 @@ class PairedVideoSequenceDataset(Dataset):
 
         noisy_frames, clean_frames, sigma_frames = [], [], []
         for clean_img, noisy_img in zip(clean_imgs, noisy_imgs):
-            clean_patch = clean_img[top : top + ps, left : left + ps, :]
-            noisy_patch = noisy_img[top : top + ps, left : left + ps, :]
+            if ps is None:
+                clean_patch = clean_img
+                noisy_patch = noisy_img
+            else:
+                clean_patch = clean_img[top : top + ps, left : left + ps, :]
+                noisy_patch = noisy_img[top : top + ps, left : left + ps, :]
             if flip_v:
                 clean_patch = clean_patch[::-1, :, :]
                 noisy_patch = noisy_patch[::-1, :, :]
@@ -675,7 +923,13 @@ class PairedVideoSequenceDataset(Dataset):
 
     @property
     def num_clips(self) -> int:
+        if self._random_windows:
+            return self._num_sequences * self._windows_per_sequence
         return len(self._clips)
+
+    @property
+    def num_sequences(self) -> int:
+        return self._num_sequences
 
 
 # ---------------------------------------------------------------------------

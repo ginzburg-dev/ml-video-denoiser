@@ -189,10 +189,44 @@ uv run python training.py \
     --paired-noisy /path/to/train_noisy \
     --val-clean /path/to/val_clean \
     --val-noisy /path/to/val_noisy \
+    --val-windows-per-sequence 3 \
+    --val-crop-mode grid \
+    --val-grid-size 2 \
     --size standard \
     --model temporal \
     --epochs 300
 ```
+
+To reduce epoch length on long sequences, you can switch temporal training to
+random per-sequence window sampling:
+
+```bash
+uv run python training.py \
+    --paired-clean /path/to/train_clean \
+    --paired-noisy /path/to/train_noisy \
+    --size standard \
+    --model temporal \
+    --random-temporal-windows \
+    --windows-per-sequence 4 \
+    --epochs 300
+```
+
+With that mode enabled, each sequence contributes `windows_per_sequence`
+temporal windows per epoch instead of all possible sliding windows. Validation
+still uses deterministic sliding windows.
+
+Validation controls:
+
+- `--val-windows-per-sequence N` keeps `N` evenly spaced temporal windows from
+  each validation sequence instead of evaluating every sliding window.
+- `--val-crop-mode center` uses a deterministic center crop for validation.
+- `--val-crop-mode random` keeps validation crops random.
+- `--val-crop-mode grid` evaluates a deterministic `N x N` crop grid per
+  validation window, where `N` is set by `--val-grid-size`.
+- `--val-crop-mode full` validates on full-resolution frames and automatically
+  uses `batch_size=1` for the validation loader.
+- `--val-grid-size 2` means `2 x 2 = 4` deterministic crops per validation
+  window. `--val-grid-size 3` means `3 x 3 = 9` crops.
 
 For `--model temporal`, both training and validation directories must be
 sequence roots whose immediate subdirectories are clips:

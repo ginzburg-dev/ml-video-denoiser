@@ -13,6 +13,9 @@ from dataset import CombinedDataset
 from training import (
     _dataset_summary_lines,
     _make_noise_generator,
+    _temporal_sampling_config,
+    _validation_patch_repeats,
+    _validation_temporal_config,
     _validation_mode,
     build_parser,
 )
@@ -97,6 +100,82 @@ class TestTrainingCli:
         args = parser.parse_args(["--data", "images", "--val-clean", "val_clean"])
         with pytest.raises(SystemExit):
             _validation_mode(args, parser)
+
+    def test_temporal_sampling_defaults_to_off(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images"])
+        assert _temporal_sampling_config(args, parser) == (False, None)
+
+    def test_windows_per_sequence_enables_random_temporal_sampling(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--model", "temporal",
+            "--windows-per-sequence", "4",
+        ])
+        assert _temporal_sampling_config(args, parser) == (True, 4)
+
+    def test_temporal_sampling_requires_temporal_model(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--windows-per-sequence", "4"])
+        with pytest.raises(SystemExit):
+            _temporal_sampling_config(args, parser)
+
+    def test_windows_per_sequence_must_be_positive(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--model", "temporal",
+            "--windows-per-sequence", "0",
+        ])
+        with pytest.raises(SystemExit):
+            _temporal_sampling_config(args, parser)
+
+    def test_val_windows_per_sequence_requires_temporal_model(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--val-data", "val_images",
+            "--val-windows-per-sequence", "2",
+        ])
+        with pytest.raises(SystemExit):
+            _validation_temporal_config(args, parser, "synthetic")
+
+    def test_val_windows_per_sequence_requires_validation(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--model", "temporal",
+            "--val-windows-per-sequence", "2",
+        ])
+        with pytest.raises(SystemExit):
+            _validation_temporal_config(args, parser, None)
+
+    def test_validation_temporal_config_returns_crop_mode(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--model", "temporal",
+            "--val-data", "val_images",
+            "--val-windows-per-sequence", "3",
+            "--val-crop-mode", "center",
+        ])
+        assert _validation_temporal_config(args, parser, "synthetic") == (3, "center", 2)
+
+    def test_validation_temporal_config_returns_grid_size(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--model", "temporal",
+            "--val-data", "val_images",
+            "--val-crop-mode", "grid",
+            "--val-grid-size", "3",
+        ])
+        assert _validation_temporal_config(args, parser, "synthetic") == (None, "grid", 3)
+
+    def test_validation_patch_repeats_matches_grid_area(self) -> None:
+        assert _validation_patch_repeats("grid", 3) == 9
+        assert _validation_patch_repeats("center", 3) == 1
 
     def test_dataset_summary_uses_image_count_when_available(self) -> None:
         lines = _dataset_summary_lines("Train", _DummyDataset(128, num_images=8))

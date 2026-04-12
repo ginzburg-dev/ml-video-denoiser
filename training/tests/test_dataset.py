@@ -113,6 +113,38 @@ class TestPatchDataset:
         ds = PatchDataset([image_dir])
         assert ds.num_images == 5
 
+    def test_center_crop_is_deterministic(self, image_dir: Path) -> None:
+        gen = GaussianNoiseGenerator(0.0, 0.0)
+        ds = PatchDataset(
+            [image_dir],
+            noise_generator=gen,
+            patches_per_image=2,
+            patch_size=64,
+            augment=False,
+            crop_mode="center",
+        )
+        noisy0, clean0, sigma0 = ds[0]
+        noisy1, clean1, sigma1 = ds[0]
+        assert torch.allclose(noisy0, noisy1)
+        assert torch.allclose(clean0, clean1)
+        assert torch.allclose(sigma0, sigma1)
+
+    def test_grid_crop_produces_multiple_deterministic_views(self, image_dir: Path) -> None:
+        gen = GaussianNoiseGenerator(0.0, 0.0)
+        ds = PatchDataset(
+            [image_dir],
+            noise_generator=gen,
+            patches_per_image=4,
+            patch_size=64,
+            augment=False,
+            crop_mode="grid",
+            crop_grid_size=2,
+        )
+        views = [ds[i][1] for i in range(4)]
+        assert all(view.shape == (3, 64, 64) for view in views)
+        assert not torch.allclose(views[0], views[1])
+        assert torch.allclose(ds[0][1], views[0])
+
     def test_different_items_from_same_image_differ(self, image_dir: Path) -> None:
         ds = PatchDataset([image_dir], patches_per_image=4, patch_size=64, augment=True)
         noisy0, _, _ = ds[0]
@@ -156,6 +188,24 @@ class TestVideoSequenceDataset:
         ds = VideoSequenceDataset([video_seq_dir], num_frames=5)
         assert ds.num_clips == 6  # 10 - 5 + 1
 
+    def test_random_window_mode_uses_windows_per_sequence(self, video_seq_dir: Path) -> None:
+        ds = VideoSequenceDataset(
+            [video_seq_dir],
+            num_frames=5,
+            patches_per_clip=2,
+            random_windows=True,
+            windows_per_sequence=3,
+            patch_size=32,
+            augment=False,
+        )
+        assert ds.num_sequences == 1
+        assert ds.num_clips == 3
+        assert len(ds) == 6
+        noisy, clean, sigma_map = ds[0]
+        assert noisy.shape == (5, 3, 32, 32)
+        assert clean.shape == (5, 3, 32, 32)
+        assert sigma_map.shape == (5, 3, 32, 32)
+
     def test_variable_frame_sizes_are_padded_before_shared_crop(self, tmp_path: Path) -> None:
         import imageio.v3 as iio
 
@@ -173,6 +223,33 @@ class TestVideoSequenceDataset:
         assert noisy.shape == (5, 3, 64, 64)
         assert clean.shape == (5, 3, 64, 64)
         assert sigma_map.shape == (5, 3, 64, 64)
+
+    def test_full_crop_preserves_temporal_frame_size(self, video_seq_dir: Path) -> None:
+        ds = VideoSequenceDataset(
+            [video_seq_dir], num_frames=5, patches_per_clip=1, augment=False, crop_mode="full"
+        )
+        noisy, clean, sigma_map = ds[0]
+        assert noisy.shape == (5, 3, 96, 96)
+        assert clean.shape == (5, 3, 96, 96)
+        assert sigma_map.shape == (5, 3, 96, 96)
+
+    def test_grid_crop_uses_deterministic_temporal_views(self, video_seq_dir: Path) -> None:
+        gen = GaussianNoiseGenerator(0.0, 0.0)
+        ds = VideoSequenceDataset(
+            [video_seq_dir],
+            noise_generator=gen,
+            num_frames=5,
+            patches_per_clip=4,
+            patch_size=32,
+            augment=False,
+            crop_mode="grid",
+            crop_grid_size=2,
+        )
+        clip0 = ds[0][1]
+        clip1 = ds[1][1]
+        assert clip0.shape == (5, 3, 32, 32)
+        assert clip1.shape == (5, 3, 32, 32)
+        assert not torch.allclose(clip0, clip1)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +467,59 @@ class TestPairedVideoSequenceDataset:
             [clean_root], [noisy_root], num_frames=5, patches_per_clip=1, patch_size=32
         )
         assert ds.num_clips == 4  # 8 - 5 + 1
+
+    def test_deterministic_window_subset_for_validation(self, tmp_path: Path) -> None:
+        clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=1, n_frames=10)
+        ds = PairedVideoSequenceDataset(
+            [clean_root], [noisy_root],
+            num_frames=5,
+            patches_per_clip=1,
+            windows_per_sequence=3,
+            patch_size=32,
+            augment=False,
+            crop_mode="center",
+        )
+        assert ds.num_clips == 3
+        sample_a = ds[0]
+        sample_b = ds[0]
+        for a, b in zip(sample_a, sample_b):
+            assert torch.allclose(a, b)
+
+    def test_grid_crop_uses_deterministic_paired_temporal_views(self, tmp_path: Path) -> None:
+        clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=1, n_frames=10)
+        ds = PairedVideoSequenceDataset(
+            [clean_root], [noisy_root],
+            num_frames=5,
+            patches_per_clip=4,
+            patch_size=32,
+            augment=False,
+            crop_mode="grid",
+            crop_grid_size=2,
+        )
+        clip0 = ds[0][1]
+        clip1 = ds[1][1]
+        assert clip0.shape == (5, 3, 32, 32)
+        assert clip1.shape == (5, 3, 32, 32)
+        assert not torch.allclose(clip0, clip1)
+
+    def test_random_window_mode_uses_windows_per_sequence(self, tmp_path: Path) -> None:
+        clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=2, n_frames=10)
+        ds = PairedVideoSequenceDataset(
+            [clean_root], [noisy_root],
+            num_frames=5,
+            patches_per_clip=2,
+            random_windows=True,
+            windows_per_sequence=3,
+            patch_size=32,
+            augment=False,
+        )
+        assert ds.num_sequences == 2
+        assert ds.num_clips == 6
+        assert len(ds) == 12
+        noisy, clean, sigma_map = ds[0]
+        assert noisy.shape == (5, 3, 32, 32)
+        assert clean.shape == (5, 3, 32, 32)
+        assert sigma_map.shape == (5, 3, 32, 32)
 
     def test_variable_frame_sizes_are_padded_before_shared_crop(self, tmp_path: Path) -> None:
         import imageio.v3 as iio
