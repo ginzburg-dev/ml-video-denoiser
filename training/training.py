@@ -431,6 +431,45 @@ def _validation_mode(
     return None, None
 
 
+def _dataset_summary_lines(name: str, dataset: Dataset) -> list[str]:
+    """Return human-readable dataset statistics for startup logging."""
+    lines = [f"{name}: {len(dataset)} samples/epoch"]
+
+    if hasattr(dataset, "num_images"):
+        lines[0] += f" from {dataset.num_images} images"
+    elif hasattr(dataset, "num_clips"):
+        lines[0] += f" from {dataset.num_clips} clips"
+    elif hasattr(dataset, "num_pairs"):
+        lines[0] += f" from {dataset.num_pairs} pairs"
+    elif hasattr(dataset, "num_datasets"):
+        lines[0] += f" across {dataset.num_datasets} datasets"
+
+    if isinstance(dataset, CombinedDataset):
+        for index, sub_dataset in enumerate(dataset._datasets, start=1):
+            weight = dataset._weights[index - 1]
+            sub_lines = _dataset_summary_lines(
+                f"{name} component {index} ({weight * 100:.0f}%)",
+                sub_dataset,
+            )
+            lines.extend(f"  {line}" for line in sub_lines)
+
+    return lines
+
+
+def _log_loader_summary(
+    name: str,
+    dataset: Dataset,
+    loader: DataLoader,
+) -> None:
+    """Print dataset and loader sizing information before training starts."""
+    for line in _dataset_summary_lines(name, dataset):
+        print(line)
+    print(
+        f"{name} loader: batch_size={loader.batch_size}  "
+        f"steps/epoch={len(loader)}  workers={loader.num_workers}"
+    )
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -530,6 +569,10 @@ def main() -> None:
         DataLoader(val_ds, batch_size=args.batch_size, num_workers=args.workers)
         if val_ds else None
     )
+
+    _log_loader_summary("Train", train_ds, train_loader)
+    if val_ds is not None and val_loader is not None:
+        _log_loader_summary("Val", val_ds, val_loader)
 
     train(
         model=model_instance,

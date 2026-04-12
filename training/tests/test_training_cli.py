@@ -1,13 +1,33 @@
 """Tests for the training CLI parser and noise selection."""
 
 import pytest
+import torch
+from torch.utils.data import Dataset
 
 from noise_generators import (
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
     PoissonGaussianNoiseGenerator,
 )
-from training import _make_noise_generator, _validation_mode, build_parser
+from dataset import CombinedDataset
+from training import (
+    _dataset_summary_lines,
+    _make_noise_generator,
+    _validation_mode,
+    build_parser,
+)
+
+
+class _DummyDataset(Dataset):
+    def __init__(self, length: int, *, num_images: int | None = None) -> None:
+        self._length = length
+        self.num_images = num_images
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, idx: int):
+        return (torch.zeros(1),)
 
 
 class TestTrainingCli:
@@ -77,3 +97,18 @@ class TestTrainingCli:
         args = parser.parse_args(["--data", "images", "--val-clean", "val_clean"])
         with pytest.raises(SystemExit):
             _validation_mode(args, parser)
+
+    def test_dataset_summary_uses_image_count_when_available(self) -> None:
+        lines = _dataset_summary_lines("Train", _DummyDataset(128, num_images=8))
+        assert lines == ["Train: 128 samples/epoch from 8 images"]
+
+    def test_dataset_summary_expands_combined_dataset(self) -> None:
+        combined = CombinedDataset(
+            datasets=[_DummyDataset(80, num_images=5), _DummyDataset(20, num_images=2)],
+            weights=[0.8, 0.2],
+            num_samples=100,
+        )
+        lines = _dataset_summary_lines("Train", combined)
+        assert lines[0] == "Train: 100 samples/epoch across 2 datasets"
+        assert "Train component 1 (80%): 80 samples/epoch from 5 images" in lines[1]
+        assert "Train component 2 (20%): 20 samples/epoch from 2 images" in lines[2]
