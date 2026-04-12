@@ -123,10 +123,10 @@ cmake --build build-debug -j$(nproc)
 # Specific suite
 ./build/tests/denoiser_tests --gtest_filter="TensorTest.*"
 
-# UNet parity tests (need fixture — see step 5)
+# NAFNet parity tests (need fixture — see step 5)
 ./build/tests/denoiser_tests \
     --gtest_also_run_disabled_tests \
-    --gtest_filter="UNetForwardTest.*"
+    --gtest_filter="NAFNetForwardTest.*"
 ```
 
 ### Generate test fixture
@@ -146,7 +146,7 @@ uv run pytest ../tests/test_integration.py -v
 
 This runs:
 - Python export round-trip tests
-- Python NEFResidual correctness tests
+- Python NAFNet correctness tests
 - C++ gtest binary (if built)
 - Python ↔ C++ parity against the fixture
 - CLI smoke tests (if built)
@@ -210,6 +210,6 @@ The CLI checks for `ffmpeg` / `ffprobe` before attempting any video operation an
 
 ```bash
 cmake --install build --prefix /usr/local
-# Installs: /usr/local/bin/nef_denoise
+# Installs: /usr/local/bin/denoiser
 #           /usr/local/include/denoiser/...
 ```

@@ -31,13 +31,13 @@ Top-level structure:
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | string | `"nef_residual"` or `"nef_temporal"` |
+| `type` | string | `"nafnet_residual"` or `"nafnet_temporal"` |
 | `enc_channels` | int[] | Channel widths per encoder level, e.g. `[64,128,256,512]` |
 | `num_levels` | int | Length of `enc_channels` |
 | `in_channels` | int | Input image channels (3 for RGB) |
 | `out_channels` | int | Output channels (3 for RGB) |
-| `num_frames` | int | Temporal window (NEFTemporal only) |
-| `deform_groups` | int | Deformable conv groups (NEFTemporal only) |
+| `num_frames` | int | Temporal window (NAFNetTemporal only) |
+| `use_warp` | bool | Optional learned warp path (NAFNetTemporal only) |
 
 ### `layers` array
 
@@ -95,7 +95,7 @@ f.read(reinterpret_cast<char*>(buf.data()), buf.size() * sizeof(__half));
 
 ## Weight name conventions
 
-The C++ engine constructs weight names from the architecture pattern.  The table below shows the mapping for NEFResidual:
+The C++ engine constructs weight names from the exported NAFNet pattern.  The table below shows the mapping for the spatial model:
 
 | PyTorch path | C++ lookup key |
 |---|---|
@@ -110,7 +110,7 @@ The C++ engine constructs weight names from the architecture pattern.  The table
 | `head.weight` | `head.weight` |
 | `head.bias` | `head.bias` |
 
-Additional keys for NEFTemporal:
+Additional keys for NAFNetTemporal:
 
 | PyTorch path | C++ lookup key |
 |---|---|

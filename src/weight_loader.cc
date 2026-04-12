@@ -101,12 +101,13 @@ void WeightStore::parse_manifest(const std::string& path) {
     // Architecture
     if (j.contains("architecture")) {
         const auto& arch = j["architecture"];
-        manifest_.architecture.type = arch.value("type", "nef_residual");
+        manifest_.architecture.type = arch.value("type", "nafnet_residual");
+        manifest_.architecture.base_channels = arch.value("base_channels", 32);
         manifest_.architecture.in_channels = arch.value("in_channels", 3);
         manifest_.architecture.out_channels = arch.value("out_channels", 3);
         manifest_.architecture.num_levels = arch.value("num_levels", 4);
         manifest_.architecture.num_frames = arch.value("num_frames", 5);
-        manifest_.architecture.deform_groups = arch.value("deform_groups", 8);
+        manifest_.architecture.use_warp = arch.value("use_warp", false);
         if (arch.contains("enc_channels")) {
             for (const auto& ch : arch["enc_channels"]) {
                 manifest_.architecture.enc_channels.push_back(ch.get<int>());

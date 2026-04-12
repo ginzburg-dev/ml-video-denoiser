@@ -1,7 +1,7 @@
 """Phase 6 integration tests: Python ↔ C++ parity and end-to-end CLI smoke tests.
 
 These tests validate that the C++ inference engine produces numerically
-identical results to the Python NEFResidual, and that the full pipeline
+identical results to the Python UNetResidual, and that the full pipeline
 (export → C++ load → forward → output) works end-to-end.
 
 Prerequisites:
@@ -35,7 +35,7 @@ BUILD_DIR    = REPO_ROOT / "build"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
-from models import ModelConfig, NEFResidual  # noqa: E402
+from models import ModelConfig, UNetResidual  # noqa: E402
 from export import export_model, verify_export  # noqa: E402
 
 
@@ -64,8 +64,8 @@ def cpp_tests_binary() -> Path | None:
 
 def cli_binary() -> Path | None:
     for candidate in [
-        BUILD_DIR / "nef_denoise",
-        BUILD_DIR / "cli" / "nef_denoise",
+        BUILD_DIR / "denoiser",
+        BUILD_DIR / "cli" / "denoiser",
     ]:
         if candidate.exists():
             return candidate
@@ -110,20 +110,20 @@ class TestExportRoundtrip:
 
     def test_float16_roundtrip(self, tmp_path: Path):
         torch.manual_seed(0)
-        model = NEFResidual(tiny_config()).eval()
+        model = UNetResidual(tiny_config()).eval()
         manifest = export_model(model, tmp_path, dtype="float16")
         assert verify_export(model, manifest, rtol=1e-2)
 
     def test_float32_roundtrip(self, tmp_path: Path):
         torch.manual_seed(0)
-        model = NEFResidual(tiny_config()).eval()
+        model = UNetResidual(tiny_config()).eval()
         manifest = export_model(model, tmp_path, dtype="float32")
         assert verify_export(model, manifest, rtol=1e-5)
 
     def test_bn_stats_always_float32(self, tmp_path: Path):
         """BN running_mean and running_var must always be float32 in the manifest."""
         torch.manual_seed(0)
-        model = NEFResidual(tiny_config()).eval()
+        model = UNetResidual(tiny_config()).eval()
         manifest_path = export_model(model, tmp_path, dtype="float16")
 
         import json
@@ -139,7 +139,7 @@ class TestExportRoundtrip:
 
     def test_conv_weights_are_float16(self, tmp_path: Path):
         torch.manual_seed(0)
-        model = NEFResidual(tiny_config()).eval()
+        model = UNetResidual(tiny_config()).eval()
         manifest_path = export_model(model, tmp_path, dtype="float16")
 
         import json
@@ -156,7 +156,7 @@ class TestExportRoundtrip:
     def test_manifest_architecture_fields(self, tmp_path: Path):
         torch.manual_seed(0)
         cfg   = tiny_config()
-        model = NEFResidual(cfg).eval()
+        model = UNetResidual(cfg).eval()
         manifest_path = export_model(model, tmp_path, dtype="float16")
 
         import json
@@ -164,7 +164,7 @@ class TestExportRoundtrip:
             manifest = json.load(f)
 
         arch = manifest["architecture"]
-        assert arch["type"]         == "nef_residual"
+        assert arch["type"]         == "unet_residual"
         assert arch["enc_channels"] == cfg.enc_channels
         assert arch["num_levels"]   == cfg.num_levels
         assert arch["in_channels"]  == cfg.in_channels
@@ -172,16 +172,16 @@ class TestExportRoundtrip:
 
 
 # ---------------------------------------------------------------------------
-# 2. Python NEFResidual correctness
+# 2. Python UNetResidual correctness
 # ---------------------------------------------------------------------------
 
-class TestNEFResidualPython:
+class TestUNetResidualPython:
     """Basic correctness checks for the Python model."""
 
     @pytest.fixture
     def model(self):
         torch.manual_seed(7)
-        return NEFResidual(tiny_config()).eval()
+        return UNetResidual(tiny_config()).eval()
 
     def test_output_shape_equals_input(self, model):
         x = torch.rand(1, 3, 64, 64)
@@ -334,7 +334,7 @@ class TestPythonCppParity:
 
         enc_ch = manifest["architecture"]["enc_channels"]
         cfg    = ModelConfig(enc_channels=enc_ch)
-        model  = NEFResidual(cfg).half().eval()
+        model  = UNetResidual(cfg).half().eval()
 
         # Load exported weights back into the model
         state = model.state_dict()
@@ -374,7 +374,7 @@ class TestPythonCppParity:
 # ---------------------------------------------------------------------------
 
 class TestCLI:
-    """End-to-end tests for the nef_denoise CLI binary."""
+    """End-to-end tests for the denoiser CLI binary."""
 
     @skip_no_cli
     @skip_no_fixture
@@ -509,7 +509,7 @@ class TestTrainingSmokeTest:
     def _make_model(self, seed: int = 42):
         from models import ModelConfig
         torch.manual_seed(seed)
-        return NEFResidual(ModelConfig(enc_channels=[8, 16]))
+        return UNetResidual(ModelConfig(enc_channels=[8, 16]))
 
     @skip_no_samples
     def test_sample_images_are_valid_rgb(self):
@@ -654,7 +654,7 @@ class TestPSNRRegression:
 
     def test_random_init_no_nan(self):
         torch.manual_seed(3)
-        model = NEFResidual(tiny_config()).eval()
+        model = UNetResidual(tiny_config()).eval()
         x = torch.rand(1, 3, 64, 64) * 0.8 + 0.1
 
         with torch.no_grad():
@@ -672,7 +672,7 @@ class TestPSNRRegression:
         from models import ModelConfig
 
         ckpt_path = REPO_ROOT / "checkpoints" / "residual_standard" / "best.pth"
-        model = NEFResidual(ModelConfig.standard())
+        model = UNetResidual(ModelConfig.standard())
         state = torch.load(str(ckpt_path), map_location="cpu")
         model.load_state_dict(state.get("model_state_dict", state))
         model.eval()

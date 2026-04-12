@@ -46,7 +46,8 @@ public:
                 std::optional<std::string> bias_name = std::nullopt,
                 int pad = 1,
                 int stride = 1,
-                int dilation = 1);
+                int dilation = 1,
+                int groups = 1);
 
     ~Conv2dLayer();
 
@@ -65,6 +66,7 @@ public:
     int in_channels() const noexcept { return in_channels_; }
     int kernel_h() const noexcept { return kernel_h_; }
     int kernel_w() const noexcept { return kernel_w_; }
+    int groups() const noexcept { return groups_; }
 
 private:
     struct Workspace {
@@ -87,6 +89,7 @@ private:
     int pad_ = 0;
     int stride_ = 0;
     int dilation_ = 0;
+    int groups_ = 1;
 
     // Workspace cache keyed by (H, W)
     mutable std::map<std::pair<int, int>, Workspace> workspace_cache_;

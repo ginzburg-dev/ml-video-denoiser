@@ -1,26 +1,30 @@
 """Denoiser model architectures.
 
-NEFResidual
-    Single-frame spatial denoiser.  UNet encoder-decoder with residual
-    learning: the network predicts the noise component, which is subtracted
-    from the input to recover the clean image.
+NAFNet
+    Single-frame spatial denoiser using NAFNet blocks (ECCV 2022).
 
-NEFTemporal
-    Multi-frame temporal denoiser.  Encodes all T frames with a shared
-    encoder.  At each scale the reference frame features are concatenated
-    with the mean of neighbour features and mixed by a learned 1×1 conv.
+    * LayerNorm2d instead of BatchNorm2d — normalises per image per channel,
+      batch-size independent, much better suited to HDR / EXR data.
+    * SimpleGate (x₁ × x₂) instead of ReLU — gated, avoids dead neurons.
+    * NAFBlock with depthwise conv, simplified channel attention, and dual
+      β/γ-scaled residuals that are zero-initialised (identity at epoch 0).
 
-    Optional learned warp (ModelConfig.use_warp=True): before mixing, each
-    neighbour feature map is warped to the reference using a per-level
-    offset head — a lightweight Conv2d(2C, 2, 1) that predicts a dense
-    (dx, dy) displacement field applied via bilinear grid_sample.  Use this
-    for real video with significant camera or object motion.  Leave disabled
-    for render sequences where Monte Carlo noise is pixel-independent.
+NAFNetTemporal
+    Multi-frame temporal denoiser using NAFNet blocks (ECCV 2022).
+    Encodes all T frames with a shared NAFNet encoder.  At each scale the
+    reference frame skip features are concatenated with the mean of neighbour
+    features and mixed by a learned 1×1 conv.
+
+    Optional learned warp (use_warp=True): before mixing, each neighbour
+    feature map is warped to the reference using a per-level offset head —
+    a lightweight Conv2d(2C, 2, 1) that predicts a dense (dx, dy)
+    displacement field applied via bilinear grid_sample.  Use this for real
+    video with significant camera or object motion.  Leave disabled for
+    render sequences where Monte Carlo noise is pixel-independent.
 
 Both models accept float32 images and return float32 values. No clamping is applied — the full input range is preserved.
 """
 
-from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
@@ -30,139 +34,9 @@ from torch import Tensor
 
 
 # ---------------------------------------------------------------------------
-# Model configuration
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ModelConfig:
-    """Shared configuration for NEFResidual and NEFTemporal.
-
-    Args:
-        enc_channels: Number of feature channels at each encoder level.
-            Length determines the number of levels (default: 4).
-        in_channels: Number of input image channels (default: 3 for RGB).
-        out_channels: Number of output channels (default: 3).
-        num_frames: Temporal window size for NEFTemporal (default: 5).
-        use_warp: Enable learned per-level warp in NEFTemporal.  Each
-            neighbour feature map is warped to the reference before mixing
-            using a lightweight Conv2d(2C, 2, 1) offset head.  Recommended
-            for real video; leave False for render sequences (default: False).
-        sigma_min: Minimum noise std used during training (informational).
-        sigma_max: Maximum noise std used during training (informational).
-    """
-
-    enc_channels: list[int] = field(default_factory=lambda: [64, 128, 256, 512])
-    in_channels: int = 3
-    out_channels: int = 3
-    num_frames: int = 5
-    use_warp: bool = False
-    sigma_min: float = 0.0
-    sigma_max: float = 75.0 / 255.0
-
-    @classmethod
-    def lite(cls) -> "ModelConfig":
-        return cls(enc_channels=[32, 64, 128, 256])
-
-    @classmethod
-    def standard(cls) -> "ModelConfig":
-        return cls(enc_channels=[64, 128, 256, 512])
-
-    @classmethod
-    def heavy(cls) -> "ModelConfig":
-        return cls(enc_channels=[96, 192, 384, 768])
-
-    @property
-    def num_levels(self) -> int:
-        return len(self.enc_channels)
-
-    @property
-    def pad_multiple(self) -> int:
-        """Input spatial dims must be divisible by this for clean skip connections."""
-        return 2 ** self.num_levels
-
-
-# ---------------------------------------------------------------------------
-# Building blocks
-# ---------------------------------------------------------------------------
-
-
-class ConvBnRelu(nn.Module):
-    """Conv2d → BatchNorm2d → ReLU block.
-
-    Args:
-        in_ch: Input channels.
-        out_ch: Output channels.
-        kernel_size: Convolution kernel size (default: 3).
-        stride: Convolution stride (default: 1).
-        padding: Convolution padding (default: 1).
-        bias: Whether to add a bias term.  Defaults to False when followed by
-            BatchNorm (the BN bias subsumes it).
-    """
-
-    def __init__(
-        self,
-        in_ch: int,
-        out_ch: int,
-        kernel_size: int = 3,
-        stride: int = 1,
-        padding: int = 1,
-        bias: bool = False,
-    ) -> None:
-        super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride=stride, padding=padding, bias=bias)
-        self.bn = nn.BatchNorm2d(out_ch)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.relu(self.bn(self.conv(x)))
-
-
-class EncoderBlock(nn.Module):
-    """Two ConvBnRelu layers followed by MaxPool2d.
-
-    The feature maps *before* pooling are returned as skip connections.
-
-    Args:
-        in_ch: Input channels.
-        out_ch: Output channels after both convolutions.
-    """
-
-    def __init__(self, in_ch: int, out_ch: int) -> None:
-        super().__init__()
-        self.conv1 = ConvBnRelu(in_ch, out_ch)
-        self.conv2 = ConvBnRelu(out_ch, out_ch)
-        self.pool = nn.MaxPool2d(2, 2)
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        """Returns (pooled_features, skip_features)."""
-        x = self.conv2(self.conv1(x))
-        return self.pool(x), x  # (downsampled, skip)
-
-
-class DecoderBlock(nn.Module):
-    """Bilinear upsample, concat with skip, two ConvBnRelu layers.
-
-    Args:
-        in_ch: Channels coming from the previous (deeper) decoder level.
-        skip_ch: Channels from the corresponding encoder skip connection.
-        out_ch: Output channels.
-    """
-
-    def __init__(self, in_ch: int, skip_ch: int, out_ch: int) -> None:
-        super().__init__()
-        self.conv1 = ConvBnRelu(in_ch + skip_ch, out_ch)
-        self.conv2 = ConvBnRelu(out_ch, out_ch)
-
-    def forward(self, x: Tensor, skip: Tensor) -> Tensor:
-        x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
-        x = torch.cat([x, skip], dim=1)
-        return self.conv2(self.conv1(x))
-
-
-# ---------------------------------------------------------------------------
 # Padding utilities
 # ---------------------------------------------------------------------------
+
 
 
 def _pad_to_multiple(x: Tensor, multiple: int) -> tuple[Tensor, tuple[int, int, int, int]]:
@@ -188,27 +62,204 @@ def _unpad(x: Tensor, padding: tuple[int, int, int, int]) -> Tensor:
 
 
 # ---------------------------------------------------------------------------
+# NAFNet building blocks  (NAFNet — ECCV 2022, Chen et al.)
+# ---------------------------------------------------------------------------
+
+
+class LayerNorm2d(nn.Module):
+    """Per-channel layer normalisation for 4-D feature maps (B, C, H, W).
+
+    Equivalent to ``nn.LayerNorm(C)`` applied independently at every spatial
+    position.  Unlike BatchNorm2d, statistics are computed per image — no
+    dependence on batch size or other images.  This makes it robust to HDR /
+    EXR data where per-batch statistics are meaningless.
+
+    Args:
+        channels: Number of feature channels (C).
+        eps: Numerical stability offset (default: 1e-6).
+    """
+
+    def __init__(self, channels: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(channels))
+        self.bias = nn.Parameter(torch.zeros(channels))
+        self.eps = eps
+
+    def forward(self, x: Tensor) -> Tensor:
+        # F.layer_norm normalises over the *last* dims, so permute to (B, H, W, C),
+        # normalise over C per spatial position, then permute back.
+        x = x.permute(0, 2, 3, 1)          # (B, H, W, C)
+        x = F.layer_norm(x, (x.shape[-1],), None, None, self.eps)
+        x = x.permute(0, 3, 1, 2)          # (B, C, H, W)
+        return x * self.weight[None, :, None, None] + self.bias[None, :, None, None]
+
+
+class SimpleGate(nn.Module):
+    """Gated activation: split channels in two and multiply element-wise.
+
+    Given input of shape (B, 2C, H, W) splits into two (B, C, H, W) halves
+    and returns their element-wise product.  No learnable parameters.
+    Replaces ReLU throughout NAFNet — avoids dead neurons and gives the
+    network a natural mechanism to suppress irrelevant activations.
+    """
+
+    def forward(self, x: Tensor) -> Tensor:
+        x1, x2 = x.chunk(2, dim=1)
+        return x1 * x2
+
+
+class NAFBlock(nn.Module):
+    """Core NAFNet processing block.
+
+    Two residual sub-paths, each gated by a learned scalar (β, γ):
+
+    Path 1 (spatial + channel):
+        norm1 → 1×1 expand(C→2C) → DW-conv 3×3(2C) → SimpleGate(→C)
+               → SCA → 1×1 project(C→C)  scaled by β, added to residual
+
+    Path 2 (feed-forward):
+        norm2 → 1×1 expand(C→2C) → SimpleGate(→C) → 1×1 project(C→C)
+               scaled by γ, added to residual
+
+    β and γ are zero-initialised → block is identity at epoch 0.
+    This eliminates the need for careful LR warm-up.
+
+    Args:
+        channels:        Number of input/output channels.
+        dw_expand:       Channel multiplier for the depthwise expand step (default: 1).
+        ffn_expand:      Channel multiplier for the FFN expand step (default: 2).
+        drop_out_rate:   Dropout probability (default: 0.0).
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        dw_expand: int = 1,
+        ffn_expand: int = 2,
+        drop_out_rate: float = 0.0,
+    ) -> None:
+        super().__init__()
+        dw_ch = channels * dw_expand
+
+        self.norm1 = LayerNorm2d(channels)
+        self.conv1 = nn.Conv2d(channels, dw_ch * 2, kernel_size=1, padding=0, bias=True)
+        self.conv2 = nn.Conv2d(dw_ch * 2, dw_ch * 2, kernel_size=3, padding=1, groups=dw_ch * 2, bias=True)
+        self.gate = SimpleGate()
+        # Simplified Channel Attention: GAP → FC → scale
+        self.sca = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(dw_ch, dw_ch, kernel_size=1, padding=0, bias=True),
+        )
+        self.conv3 = nn.Conv2d(dw_ch, channels, kernel_size=1, padding=0, bias=True)
+
+        ffn_ch = channels * ffn_expand
+        self.norm2 = LayerNorm2d(channels)
+        self.conv4 = nn.Conv2d(channels, ffn_ch * 2, kernel_size=1, padding=0, bias=True)
+        self.conv5 = nn.Conv2d(ffn_ch, channels, kernel_size=1, padding=0, bias=True)
+
+        self.dropout = nn.Dropout2d(drop_out_rate) if drop_out_rate > 0.0 else nn.Identity()
+
+        # β and γ: learned scalars, zero-init → identity block at epoch 0
+        self.beta = nn.Parameter(torch.zeros(1, channels, 1, 1), requires_grad=True)
+        self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1), requires_grad=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # --- Path 1: spatial depthwise + channel attention ---
+        identity = x
+        x = self.norm1(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.gate(x)          # (B, dw_ch, H, W)
+        x = x * self.sca(x)       # simplified channel attention (broadcast)
+        x = self.conv3(x)
+        x = self.dropout(x)
+        x = identity + x * self.beta
+
+        # --- Path 2: feed-forward ---
+        identity = x
+        x = self.norm2(x)
+        x = self.conv4(x)
+        x = self.gate(x)          # (B, ffn_ch, H, W)
+        x = self.conv5(x)
+        x = self.dropout(x)
+        return identity + x * self.gamma
+
+
+class NAFDownsample(nn.Module):
+    """Strided 2×2 convolution that halves spatial dims and doubles channels.
+
+    Preferred over MaxPool because it is fully learnable and preserves more
+    spatial information.
+
+    Args:
+        channels: Input channel count.  Output will be ``channels * 2``.
+    """
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.body = nn.Conv2d(channels, channels * 2, kernel_size=2, stride=2, padding=0)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.body(x)
+
+
+class NAFUpsample(nn.Module):
+    """1×1 conv + PixelShuffle(2) that doubles spatial dims and halves channels.
+
+    Sub-pixel shuffle avoids checkerboard artefacts introduced by transposed
+    convolutions and is faster than bilinear interpolation + conv.
+
+    Args:
+        channels: Input channel count.  Output will be ``channels // 2``.
+    """
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(channels, channels // 2 * 4, kernel_size=1, padding=0, bias=False),
+            nn.PixelShuffle(2),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.body(x)
+
+
+def _match_spatial_size(a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
+    """Crop both tensors to the minimum shared (H, W).
+
+    Handles off-by-one differences introduced by strided conv + pixel-shuffle
+    on odd spatial dimensions.
+
+    Args:
+        a: First tensor (B, C, H_a, W_a).
+        b: Second tensor (B, C, H_b, W_b).
+
+    Returns:
+        Pair of tensors cropped to (min(H_a,H_b), min(W_a,W_b)).
+    """
+    h = min(a.shape[-2], b.shape[-2])
+    w = min(a.shape[-1], b.shape[-1])
+    return a[..., :h, :w], b[..., :h, :w]
+
+
+# ---------------------------------------------------------------------------
 # Spatial weight transfer and freeze helpers
 # ---------------------------------------------------------------------------
 
 
-def load_spatial_weights(model: "NEFTemporal", path: "Path | str") -> int:
-    """Load encoder / bottleneck / decoder / head weights from a NEFResidual checkpoint.
+def load_spatial_weights(model: "NAFNetTemporal", path: "Path | str") -> int:
+    """Transfer matching spatial-backbone tensors from a spatial checkpoint into a temporal model.
 
-    Keys that exist in both models and have matching shapes are transferred;
-    temporal-only keys (temporal_mix, offset_heads) are left at their
-    initialised values.
+    Key matching is done by name and shape — temporal-only keys
+    (``temporal_mix``, ``offset_heads``) are silently skipped.
 
     Args:
-        model: A NEFTemporal instance to update in-place.
-        path:  Path to a NEFResidual checkpoint saved by training.py
-               (must contain a ``model_state_dict`` key).
+        model: A ``NAFNetTemporal`` instance to update in-place.
+        path:  Path to a matching spatial checkpoint saved by training.py.
 
     Returns:
         Number of parameter tensors transferred.
     """
-    from pathlib import Path as _Path
-
     ckpt = torch.load(str(path), map_location="cpu", weights_only=True)
     src = ckpt.get("model_state_dict", ckpt)
     dst = model.state_dict()
@@ -218,20 +269,16 @@ def load_spatial_weights(model: "NEFTemporal", path: "Path | str") -> int:
     return len(transferred)
 
 
-def freeze_spatial(model: "NEFTemporal") -> None:
-    """Freeze encoder / bottleneck / decoder / head — train temporal components only.
-
-    After calling this, only ``temporal_mix`` (and ``offset_heads`` when
-    use_warp=True) have ``requires_grad=True``.
-    """
-    for module in (model.encoders, model.bottleneck, model.decoders, model.head):
+def freeze_spatial(model: "NAFNetTemporal") -> None:
+    """Freeze the spatial backbone of a temporal model."""
+    for module in (model.intro, model.encoders, model.downs, model.middle, model.ups, model.decoders, model.ending):
         for p in module.parameters():
             p.requires_grad_(False)
 
 
-def unfreeze_spatial(model: "NEFTemporal") -> None:
-    """Re-enable gradients for all spatial parameters (undo freeze_spatial)."""
-    for module in (model.encoders, model.bottleneck, model.decoders, model.head):
+def unfreeze_spatial(model: "NAFNetTemporal") -> None:
+    """Re-enable gradients for all spatial parameters."""
+    for module in (model.intro, model.encoders, model.downs, model.middle, model.ups, model.decoders, model.ending):
         for p in module.parameters():
             p.requires_grad_(True)
 
@@ -267,291 +314,374 @@ def _warp(feat: Tensor, offset: Tensor) -> Tensor:
 
 
 # ---------------------------------------------------------------------------
-# NEFResidual
+# NAFNet
 # ---------------------------------------------------------------------------
 
 
-class NEFResidual(nn.Module):
-    """Single-frame UNet denoiser with residual learning.
-
-    The network estimates the noise component and the output is:
-        denoised = input − predicted_noise
-
-    This residual formulation improves convergence and prevents the model
-    from hallucinating structure that was not in the original image.
-
-    Input spatial dimensions are automatically padded to multiples of
-    2^num_levels using reflect padding and stripped before returning.
+class NAFNetConfig:
+    """Configuration for NAFNet.
 
     Args:
-        config: ModelConfig controlling architecture size and behaviour.
+        in_channels:      Input image channels (default: 3).
+        base_channels:    Feature channels at the first encoder level (default: 32).
+        enc_blocks:       NAFBlocks per encoder level (default: (1, 1, 1, 28)).
+        middle_blocks:    NAFBlocks in the bottleneck (default: 1).
+        dec_blocks:       NAFBlocks per decoder level (default: (1, 1, 1, 1)).
+        dw_expand:        Depthwise expand multiplier in NAFBlock (default: 1).
+        ffn_expand:       FFN expand multiplier in NAFBlock (default: 2).
+        drop_out_rate:    Dropout probability in NAFBlock (default: 0.0).
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        base_channels: int = 32,
+        enc_blocks: tuple[int, ...] = (1, 1, 1, 28),
+        middle_blocks: int = 1,
+        dec_blocks: tuple[int, ...] = (1, 1, 1, 1),
+        dw_expand: int = 1,
+        ffn_expand: int = 2,
+        drop_out_rate: float = 0.0,
+    ) -> None:
+        self.in_channels = in_channels
+        self.base_channels = base_channels
+        self.enc_blocks = enc_blocks
+        self.middle_blocks = middle_blocks
+        self.dec_blocks = dec_blocks
+        self.dw_expand = dw_expand
+        self.ffn_expand = ffn_expand
+        self.drop_out_rate = drop_out_rate
+
+    @classmethod
+    def tiny(cls) -> "NAFNetConfig":
+        """Very fast, good for quick experiments."""
+        return cls(base_channels=16, enc_blocks=(1, 1, 1), middle_blocks=1, dec_blocks=(1, 1, 1))
+
+    @classmethod
+    def small(cls) -> "NAFNetConfig":
+        """NAFNet-S equivalent — good balance of speed and quality."""
+        return cls(base_channels=32, enc_blocks=(1, 1, 1, 1), middle_blocks=1, dec_blocks=(1, 1, 1, 1))
+
+    @classmethod
+    def standard(cls) -> "NAFNetConfig":
+        """NAFNet-baseline (32 base, deeper bottleneck)."""
+        return cls(base_channels=32, enc_blocks=(1, 1, 1, 28), middle_blocks=1, dec_blocks=(1, 1, 1, 1))
+
+    @classmethod
+    def wide(cls) -> "NAFNetConfig":
+        """Wider network — more capacity for complex noise."""
+        return cls(base_channels=64, enc_blocks=(1, 1, 1, 28), middle_blocks=1, dec_blocks=(1, 1, 1, 1))
+
+    @property
+    def num_levels(self) -> int:
+        return len(self.enc_blocks)
+
+    @property
+    def pad_multiple(self) -> int:
+        """Input must be divisible by this for clean skip connections."""
+        return 2 ** self.num_levels
+
+
+class NAFNet(nn.Module):
+    """Single-frame spatial denoiser using NAFNet blocks (ECCV 2022).
+
+    Architecture:
+        intro conv (3→base)
+        ┌── encoder level k: NAFBlock×enc_blocks[k] → NAFDownsample ──┐
+        │                                                               │ (skip)
+        bottleneck: NAFBlock×middle_blocks                             │
+        │                                                               │
+        └── decoder level k: NAFUpsample → (+skip) → NAFBlock×dec_blocks[k]
+        ending conv (base→3)  [zero-init → predicted residual ≈ 0 at epoch 0]
+
+    Key design properties:
+        * LayerNorm2d instead of BatchNorm — batch-independent, HDR-safe
+        * SimpleGate instead of ReLU — gated, avoids dead neurons
+        * Additive skip connections (+ not concat) — no extra merge conv
+        * Strided conv downsample + PixelShuffle upsample — fully learnable
+
+    Args:
+        config: NAFNetConfig controlling block counts and channel widths.
 
     Example::
 
-        model = NEFResidual(ModelConfig.standard())
-        noisy = torch.rand(1, 3, 720, 1280)   # any size — auto-padded
-        denoised = model(noisy)                # same shape as input
+        model = NAFNet(NAFNetConfig.standard())
+        noisy = torch.rand(1, 3, 720, 1280)  # any size — auto-padded
+        denoised = model(noisy)              # same shape as input
     """
 
-    def __init__(self, config: Optional[ModelConfig] = None) -> None:
+    def __init__(self, config: Optional["NAFNetConfig"] = None) -> None:
         super().__init__()
-        cfg = config or ModelConfig.standard()
+        cfg = config or NAFNetConfig.standard()
         self._pad_multiple = cfg.pad_multiple
 
-        enc_ch = cfg.enc_channels
-        in_ch = cfg.in_channels
-        out_ch = cfg.out_channels
+        kw = {"dw_expand": cfg.dw_expand, "ffn_expand": cfg.ffn_expand, "drop_out_rate": cfg.drop_out_rate}
 
-        # Encoder
+        self.intro = nn.Conv2d(cfg.in_channels, cfg.base_channels, kernel_size=3, padding=1, bias=True)
+        self.ending = nn.Conv2d(cfg.base_channels, 3, kernel_size=3, padding=1, bias=True)
+        nn.init.zeros_(self.ending.weight)
+        nn.init.zeros_(self.ending.bias)
+
         self.encoders = nn.ModuleList()
-        prev_ch = in_ch
-        for ch in enc_ch:
-            self.encoders.append(EncoderBlock(prev_ch, ch))
-            prev_ch = ch
-
-        # Bottleneck (deepest level, no pooling)
-        bot_ch = enc_ch[-1] * 2
-        self.bottleneck = nn.Sequential(
-            ConvBnRelu(prev_ch, bot_ch),
-            ConvBnRelu(bot_ch, bot_ch),
-        )
-
-        # Decoder (mirrors encoder in reverse)
+        self.downs = nn.ModuleList()
         self.decoders = nn.ModuleList()
-        prev_ch = bot_ch
-        for ch in reversed(enc_ch):
-            self.decoders.append(DecoderBlock(in_ch=prev_ch, skip_ch=ch, out_ch=ch))
-            prev_ch = ch
+        self.ups = nn.ModuleList()
 
-        # Head: predict noise residual.
-        # Zero-init weights and bias so the model starts as identity
-        # (predicted noise ≈ 0 at epoch 0), avoiding random channel bias.
-        self.head = nn.Conv2d(enc_ch[0], out_ch, kernel_size=1)
-        nn.init.zeros_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
+        ch = cfg.base_channels
+        for num_blocks in cfg.enc_blocks:
+            self.encoders.append(nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(num_blocks)]))
+            self.downs.append(NAFDownsample(ch))
+            ch *= 2
+
+        self.middle = nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(cfg.middle_blocks)])
+
+        for num_blocks in cfg.dec_blocks:
+            self.ups.append(NAFUpsample(ch))
+            ch //= 2
+            self.decoders.append(nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(num_blocks)]))
 
     def forward(self, x: Tensor) -> Tensor:
         """Denoise *x*.
 
         Args:
-            x: (B, C, H, W) noisy image (float32, any range).
+            x: (B, C, H, W) noisy image / render (float32, any range).
+               C must match ``config.in_channels``.
 
         Returns:
-            Denoised image of shape (B, C, H, W), same range as input.
+            Denoised beauty (B, 3, H, W), same spatial size as input.
+            Full float range preserved — no clamping.
         """
-        inp = x
+        # Replace any NaN/Inf before processing (common in raw EXR renders)
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        beauty = x[:, :3]
+        _, _, h, w = beauty.shape
+
         x, padding = _pad_to_multiple(x, self._pad_multiple)
 
-        # Encoder: collect skip connections
+        x = self.intro(x)
+
         skips: list[Tensor] = []
-        for enc in self.encoders:
-            x, skip = enc(x)
-            skips.append(skip)
+        for encoder, down in zip(self.encoders, self.downs):
+            x = encoder(x)
+            skips.append(x)
+            x = down(x)
 
-        # Bottleneck
-        x = self.bottleneck(x)
+        x = self.middle(x)
 
-        # Decoder: use skips in reverse order
-        for dec, skip in zip(self.decoders, reversed(skips)):
-            x = dec(x, skip)
+        for decoder, up, skip in zip(self.decoders, self.ups, reversed(skips)):
+            x = up(x)
+            x, skip = _match_spatial_size(x, skip)
+            x = decoder(x + skip)  # additive skip — no channel concat needed
 
-        # Predict noise, strip padding, subtract from original input
-        noise = _unpad(self.head(x), padding)
-        return inp - noise
+        residual = _unpad(self.ending(x), padding)
+        return beauty + residual
 
 
 # ---------------------------------------------------------------------------
-# NEFTemporal
+# NAFNetTemporal
 # ---------------------------------------------------------------------------
 
 
-class NEFTemporal(nn.Module):
-    """Multi-frame temporal denoiser with simple feature mixing.
+class NAFNetTemporal(nn.Module):
+    """Multi-frame temporal denoiser using NAFNet blocks (ECCV 2022).
 
     Architecture:
-        1. Shared encoder applied to all T frames (as a batch).
-        2. Per-level mixing: mean of neighbour features concatenated with
-           reference features, projected back to C channels via a 1×1 conv.
-        3. Optional warp (use_warp=True): before computing the neighbour mean,
-           each neighbour feature is warped to the reference via a per-level
-           offset head — Conv2d(2C, 2, 1) predicting a dense (dx, dy) field
-           applied with bilinear grid_sample.  Recommended for real video.
-        4. Shared decoder with mixed temporal skip connections.
-        5. Same residual head as NEFResidual.
+        1. Shared ``intro`` conv + per-level NAFBlock encoder applied to all
+           T frames as a batch (B×T, C, H, W).
+        2. Per-level temporal mixing: mean of neighbour skip features
+           concatenated with the reference skip, projected back via 1×1 conv.
+        3. Optional learned warp (``use_warp=True``): per-level offset heads —
+           Conv2d(2C, 2, 1) → bilinear grid_sample.
+        4. NAFBlock bottleneck on the reference frame's deepest features only.
+        5. Shared NAFBlock decoder with **additive** temporal skip connections
+           (NAFNet style — no channel concat, no extra merge conv).
+        6. Zero-init ``ending`` conv — predicted residual ≈ 0 at epoch 0.
 
-    The reference frame is always the centre frame:
-        reference index = num_frames // 2
-
-    At epoch 0 the model is identity: temporal_mix layers are initialised so
-    the reference-feature slice passes through unchanged (neighbour weight = 0).
-    Offset heads are zero-initialised so warp starts as identity.
+    The spatial backbone (intro / encoders / downs / middle / ups / decoders /
+    ending) shares identical key names with ``NAFNet``, so weights
+    transfer directly via ``load_spatial_weights``.
 
     Args:
-        config: ModelConfig; num_frames and use_warp are used.
+        config:     NAFNetConfig controlling block counts and base channels.
+        num_frames: Temporal window size (default: 5; reference = centre frame).
+        use_warp:   Enable per-level learned warp for real video with motion.
 
     Example::
 
-        model = NEFTemporal(ModelConfig.standard())
+        model = NAFNetTemporal()
         clip = torch.rand(1, 5, 3, 256, 256)
-        denoised = model(clip)  # (B, C, H, W) — denoised centre frame
+        denoised = model(clip)   # (B, 3, H, W) — denoised centre frame
 
-        # With warp for real video:
-        cfg = ModelConfig.standard()
-        cfg.use_warp = True
-        model = NEFTemporal(cfg)
+        # Two-stage training from a NAFNet checkpoint:
+        model = NAFNetTemporal.from_spatial("checkpoints/spatial_naf/best.pth")
+        freeze_spatial(model)    # train temporal_mix only in stage 2
     """
 
     @classmethod
-    def from_residual(
+    def from_spatial(
         cls,
         path: "Path | str",
-        config: Optional[ModelConfig] = None,
-    ) -> "NEFTemporal":
-        """Create a NEFTemporal pre-loaded with weights from a NEFResidual checkpoint.
+        config: Optional[NAFNetConfig] = None,
+        num_frames: int = 5,
+        use_warp: bool = False,
+    ) -> "NAFNetTemporal":
+        """Create a NAFNetTemporal pre-loaded with weights from a NAFNet checkpoint.
 
-        Temporal components (temporal_mix, offset_heads) keep their identity
-        initialisations; the spatial backbone is warm-started from *path*.
+        Temporal components (``temporal_mix``, ``offset_heads``) keep their
+        identity initialisations; the spatial backbone is warm-started.
 
         Args:
-            path:   Path to a NEFResidual checkpoint produced by training.py.
-            config: ModelConfig to use (default: standard).  Must match the
-                    architecture used when training the residual model.
+            path:       Path to a NAFNet checkpoint produced by training.py.
+            config:     NAFNetConfig to use (must match the training config).
+            num_frames: Temporal window (default: 5).
+            use_warp:   Enable warp heads (default: False).
 
         Returns:
-            A NEFTemporal instance with spatial weights transferred.
-
-        Example::
-
-            model = NEFTemporal.from_residual("checkpoints/residual/best.pth")
-            freeze_spatial(model)   # stage 2: train temporal components only
+            A NAFNetTemporal instance with spatial weights transferred.
         """
-        model = cls(config)
-        n = load_spatial_weights(model, path)
+        model = cls(config, num_frames=num_frames, use_warp=use_warp)
+        load_spatial_weights(model, path)
         return model
 
-    def __init__(self, config: Optional[ModelConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[NAFNetConfig] = None,
+        num_frames: int = 5,
+        use_warp: bool = False,
+    ) -> None:
         super().__init__()
-        cfg = config or ModelConfig.standard()
+        cfg = config or NAFNetConfig.standard()
         self._pad_multiple = cfg.pad_multiple
-        self._num_frames = cfg.num_frames
-        self._ref_idx = cfg.num_frames // 2
-        self._use_warp = cfg.use_warp
+        self._num_frames = num_frames
+        self._ref_idx = num_frames // 2
+        self._use_warp = use_warp
 
-        enc_ch = cfg.enc_channels
-        in_ch = cfg.in_channels
-        out_ch = cfg.out_channels
+        kw = {
+            "dw_expand": cfg.dw_expand,
+            "ffn_expand": cfg.ffn_expand,
+            "drop_out_rate": cfg.drop_out_rate,
+        }
 
-        # Shared encoder (same weights for all frames)
+        # --- Shared spatial backbone (mirrors NAFNet key-for-key) ---
+        self.intro = nn.Conv2d(cfg.in_channels, cfg.base_channels, kernel_size=3, padding=1, bias=True)
+
         self.encoders = nn.ModuleList()
-        prev_ch = in_ch
-        for ch in enc_ch:
-            self.encoders.append(EncoderBlock(prev_ch, ch))
-            prev_ch = ch
+        self.downs = nn.ModuleList()
 
-        # Per-level offset heads (only created when use_warp=True).
-        # Input: cat([ref_feat, neigh_feat]) → 2-channel (dx, dy) displacement.
-        # Zero-init: warp starts as identity (zero displacement) at epoch 0.
-        if self._use_warp:
+        enc_channels: list[int] = []
+        ch = cfg.base_channels
+        for num_blocks in cfg.enc_blocks:
+            self.encoders.append(nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(num_blocks)]))
+            enc_channels.append(ch)
+            self.downs.append(NAFDownsample(ch))
+            ch *= 2
+
+        self._enc_channels = enc_channels
+
+        self.middle = nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(cfg.middle_blocks)])
+
+        self.ups = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        for num_blocks in cfg.dec_blocks:
+            self.ups.append(NAFUpsample(ch))
+            ch //= 2
+            self.decoders.append(nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(num_blocks)]))
+
+        # Zero-init: predicted residual ≈ 0 at epoch 0.
+        self.ending = nn.Conv2d(cfg.base_channels, 3, kernel_size=3, padding=1, bias=True)
+        nn.init.zeros_(self.ending.weight)
+        nn.init.zeros_(self.ending.bias)
+
+        # --- Per-level offset heads (use_warp=True only) ---
+        # Zero-init: identity displacement at epoch 0.
+        if use_warp:
             self.offset_heads = nn.ModuleList()
-            for ch in enc_ch:
-                head = nn.Conv2d(2 * ch, 2, kernel_size=1, bias=True)
+            for skip_ch in enc_channels:
+                head = nn.Conv2d(2 * skip_ch, 2, kernel_size=1, bias=True)
                 nn.init.zeros_(head.weight)
                 nn.init.zeros_(head.bias)
                 self.offset_heads.append(head)
 
-        # Per-level temporal mixing: cat([ref, neigh_mean], dim=1) → ch.
-        # Input layout: channels [0..ch-1] = ref, [ch..2*ch-1] = neighbour mean.
-        # Identity init: ref slice = eye, neighbour slice = zero.
-        # At epoch 0 output == ref features; neighbour influence is learned.
+        # --- Per-level temporal mixing ---
+        # Input: cat([ref_skip, neigh_mean]) → skip_ch (1×1 conv).
+        # Identity init: ref slice is eye, neighbour slice is zero.
         self.temporal_mix = nn.ModuleList()
-        for ch in enc_ch:
-            conv = nn.Conv2d(2 * ch, ch, kernel_size=1, bias=True)
+        for skip_ch in enc_channels:
+            conv = nn.Conv2d(2 * skip_ch, skip_ch, kernel_size=1, bias=True)
             nn.init.zeros_(conv.weight)
             nn.init.zeros_(conv.bias)
-            for c in range(ch):
-                conv.weight.data[c, c, 0, 0] = 1.0  # ref slice → identity
+            for c in range(skip_ch):
+                conv.weight.data[c, c, 0, 0] = 1.0
             self.temporal_mix.append(conv)
-
-        # Bottleneck
-        bot_ch = enc_ch[-1] * 2
-        self.bottleneck = nn.Sequential(
-            ConvBnRelu(enc_ch[-1], bot_ch),
-            ConvBnRelu(bot_ch, bot_ch),
-        )
-
-        # Decoder
-        self.decoders = nn.ModuleList()
-        prev_ch = bot_ch
-        for ch in reversed(enc_ch):
-            self.decoders.append(DecoderBlock(in_ch=prev_ch, skip_ch=ch, out_ch=ch))
-            prev_ch = ch
-
-        # Head: zero-init for the same reason as NEFResidual.
-        self.head = nn.Conv2d(enc_ch[0], out_ch, kernel_size=1)
-        nn.init.zeros_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
 
     def forward(self, clip: Tensor) -> Tensor:
         """Denoise the centre frame of *clip*.
 
         Args:
-            clip: (B, T, C, H, W) tensor of T consecutive noisy frames (float32, any range).
+            clip: (B, T, C, H, W) noisy frames (float32, any range).
 
         Returns:
-            Denoised centre frame (B, C, H, W), same range as input.
+            Denoised centre frame (B, 3, H, W), same range as input.
         """
         b, t, c, h, w = clip.shape
         assert t == self._num_frames, f"Expected {self._num_frames} frames, got {t}"
 
-        ref_input = clip[:, self._ref_idx]  # (B, C, H, W)
+        # Replace NaN/Inf (can appear in render EXR data)
+        clip = torch.nan_to_num(clip, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Pad all frames identically (same H, W → same padding)
-        frames_padded = []
+        ref_input = clip[:, self._ref_idx]   # (B, C, H, W)
+        beauty = ref_input[:, :3]
+
+        # Pad all frames identically
+        frames_padded: list[Tensor] = []
         for i in range(t):
             padded, padding = _pad_to_multiple(clip[:, i], self._pad_multiple)
             frames_padded.append(padded)
 
-        # --- Encode all frames (batch trick: (B*T, C, H, W)) ---
-        stacked = torch.stack(frames_padded, dim=1)   # (B, T, C, H, W)
-        x = stacked.view(b * t, c, *stacked.shape[-2:])  # (B*T, C, H, W)
+        # --- Encode all frames as one batch ---
+        stacked = torch.stack(frames_padded, dim=1)          # (B, T, C, H_pad, W_pad)
+        x = stacked.view(b * t, c, *stacked.shape[-2:])      # (B*T, C, H_pad, W_pad)
 
-        all_skips: list[list[Tensor]] = []  # [level][frame]
-        all_pooled: list[Tensor] = []
+        x = self.intro(x)   # (B*T, base_ch, H_pad, W_pad)
 
-        for enc in self.encoders:
-            x, skip = enc(x)
-            _, cp, hp, wp = skip.shape
-            skip_bt = skip.view(b, t, cp, hp, wp)
+        all_skips: list[list[Tensor]] = []  # [level][frame_idx] → (B, ch, H', W')
+
+        for encoder, down in zip(self.encoders, self.downs):
+            x = encoder(x)
+            _, cp, hp, wp = x.shape
+            skip_bt = x.view(b, t, cp, hp, wp)
             all_skips.append([skip_bt[:, i] for i in range(t)])
-            all_pooled.append(x)
+            x = down(x)
+
+        # --- Bottleneck on reference frame only ---
+        _, cp, hp, wp = x.shape
+        ref_deep = x.view(b, t, cp, hp, wp)[:, self._ref_idx]
+        x = self.middle(ref_deep)
 
         # --- Per-level temporal mixing (with optional learned warp) ---
         fused_skips: list[Tensor] = []
         for level, mix in enumerate(self.temporal_mix):
-            ref_feat = all_skips[level][self._ref_idx]  # (B, C', H', W')
+            ref_feat = all_skips[level][self._ref_idx]
             neigh_feats = [all_skips[level][i] for i in range(t) if i != self._ref_idx]
 
             if self._use_warp:
                 offset_head = self.offset_heads[level]
-                warped = []
+                warped: list[Tensor] = []
                 for nf in neigh_feats:
-                    offset = offset_head(torch.cat([ref_feat, nf], dim=1))  # (B, 2, H', W')
+                    offset = offset_head(torch.cat([ref_feat, nf], dim=1))
                     warped.append(_warp(nf, offset))
                 neigh_feats = warped
 
-            neigh_mean = torch.stack(neigh_feats, dim=0).mean(dim=0)  # (B, C', H', W')
-            fused = mix(torch.cat([ref_feat, neigh_mean], dim=1))
-            fused_skips.append(fused)
+            neigh_mean = torch.stack(neigh_feats, dim=0).mean(dim=0)
+            fused_skips.append(mix(torch.cat([ref_feat, neigh_mean], dim=1)))
 
-        # --- Bottleneck (reference frame's deepest features) ---
-        _, cp, hp, wp = all_pooled[-1].shape
-        ref_deep = all_pooled[-1].view(b, t, cp, hp, wp)[:, self._ref_idx]
-        x = self.bottleneck(ref_deep)
+        # --- Decoder with additive skips (NAFNet style) ---
+        for decoder, up, skip in zip(self.decoders, self.ups, reversed(fused_skips)):
+            x = up(x)
+            x, skip = _match_spatial_size(x, skip)
+            x = decoder(x + skip)
 
-        # --- Decoder ---
-        for dec, skip in zip(self.decoders, reversed(fused_skips)):
-            x = dec(x, skip)
+        residual = _unpad(self.ending(x), padding)
+        return beauty + residual
 
-        # --- Head + residual ---
-        noise = _unpad(self.head(x), padding)
-        return ref_input - noise

@@ -88,8 +88,9 @@ add_library(denoiser_engine STATIC
     src/layers/maxpool2d.cu
     src/layers/deform_conv2d.cu
     src/kernels/model_kernels.cu
-    src/models/nef_residual.cu
-    src/models/nef_temporal.cu
+    src/kernels/nafnet_kernels.cu
+    src/models/nafnet.cu
+    src/models/nafnet_temporal.cu
     src/io/image_io.cc
     src/io/exr_io.cc
     src/io/video_io.cc
@@ -136,8 +137,8 @@ target_compile_options(denoiser_engine PRIVATE
 # ---------------------------------------------------------------------------
 # CLI executable
 # ---------------------------------------------------------------------------
-add_executable(nef_denoise cli/main.cc)
-target_link_libraries(nef_denoise PRIVATE denoiser_engine)
+add_executable(denoiser cli/main.cc)
+target_link_libraries(denoiser PRIVATE denoiser_engine)
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -151,5 +152,5 @@ endif()
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-install(TARGETS nef_denoise RUNTIME DESTINATION bin)
+install(TARGETS denoiser RUNTIME DESTINATION bin)
 install(DIRECTORY include/denoiser DESTINATION include)

@@ -66,9 +66,10 @@ static fs::path create_fixture(const fs::path& dir) {
   "model": "test_model",
   "dtype": "float32",
   "architecture": {
-    "type": "nef_residual",
+    "type": "nafnet_residual",
     "enc_channels": [32, 64],
     "num_levels": 2,
+    "base_channels": 32,
     "in_channels": 3,
     "out_channels": 3
   },
@@ -124,11 +125,12 @@ TEST_F(WeightLoaderTest, ParsesVersionAndLayerCount) {
 TEST_F(WeightLoaderTest, ArchitectureParsed) {
     WeightStore store(manifest_path_.string());
     const auto& arch = store.manifest().architecture;
-    EXPECT_EQ(arch.type, "nef_residual");
+    EXPECT_EQ(arch.type, "nafnet_residual");
     ASSERT_EQ(arch.enc_channels.size(), 2u);
     EXPECT_EQ(arch.enc_channels[0], 32);
     EXPECT_EQ(arch.enc_channels[1], 64);
     EXPECT_EQ(arch.num_levels, 2);
+    EXPECT_EQ(arch.base_channels, 32);
     EXPECT_EQ(arch.in_channels, 3);
     EXPECT_EQ(arch.out_channels, 3);
 }

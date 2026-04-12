@@ -4,11 +4,11 @@ Four datasets are provided:
 
   PatchDataset
       Loads clean images and synthesises noise on-the-fly via a NoiseGenerator.
-      No paired data required.  Suitable for training NEFResidual.
+      No paired data required.  Suitable for training NAFNet residual models.
 
   VideoSequenceDataset
       Loads temporal clips and synthesises noise consistently across frames.
-      Suitable for training NEFTemporal.
+      Suitable for training NAFNet temporal models.
 
   PairedPatchDataset
       Loads *matching* clean/noisy image pairs from two parallel directories.
@@ -389,7 +389,7 @@ class PatchDataset(Dataset):
 
 
 class VideoSequenceDataset(Dataset):
-    """Temporal clip dataset for video denoising (NEFTemporal).
+    """Temporal clip dataset for video denoising (NAFNet temporal).
 
     Each item is a clip of *num_frames* consecutive frames extracted from a
     video frame directory.  Noise is applied consistently across the clip

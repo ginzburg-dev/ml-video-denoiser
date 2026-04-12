@@ -30,7 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models import ModelConfig, NEFResidual, NEFTemporal
+from models import NAFNet, NAFNetConfig, NAFNetTemporal
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def export_model(
     """Export model weights to binary files and a manifest JSON.
 
     Args:
-        model: A trained NEFResidual or NEFTemporal in eval mode.
+        model: A trained NAFNet denoiser in eval mode.
         output_dir: Root directory for the export.  Created if absent.
         dtype: Tensor dtype for conv/linear weights.  BN stats always fp32.
 
@@ -60,8 +60,6 @@ def export_model(
     state_dict = model.state_dict()
 
     # Detect architecture and collect config info
-    is_temporal = isinstance(model, NEFTemporal)
-    cfg = model._pad_multiple  # just a proxy; full config below
     arch_info = _describe_architecture(model)
 
     layers = []
@@ -112,18 +110,16 @@ def export_model(
 
 def _describe_architecture(model: nn.Module) -> dict:
     """Extract architecture metadata from a model instance."""
-    if isinstance(model, (NEFResidual, NEFTemporal)):
-        enc_channels = [block.conv1.conv.out_channels for block in model.encoders]
+    if isinstance(model, (NAFNet, NAFNetTemporal)):
         result: dict = {
-            "type": "nef_temporal" if isinstance(model, NEFTemporal) else "nef_residual",
-            "enc_channels": enc_channels,
-            "num_levels": len(enc_channels),
-            "in_channels": model.encoders[0].conv1.conv.in_channels,
-            "out_channels": model.head.out_channels,
+            "type": "nafnet_temporal" if isinstance(model, NAFNetTemporal) else "nafnet_residual",
+            "base_channels": model.intro.out_channels,
+            "num_levels": len(model.encoders),
+            "in_channels": model.intro.in_channels,
         }
-        if isinstance(model, NEFTemporal):
+        if isinstance(model, NAFNetTemporal):
             result["num_frames"] = model._num_frames
-            result["deform_groups"] = model.align_layers[0]._deform_groups
+            result["use_warp"] = model._use_warp
         return result
     return {"type": "unknown"}
 
@@ -182,18 +178,32 @@ def verify_export(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export model weights for C++ inference.")
     parser.add_argument("--checkpoint", required=True, metavar="PATH")
-    parser.add_argument("--model", choices=["residual", "temporal"], default="residual")
-    parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
+    parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
+    parser.add_argument("--naf-base", type=int, default=32, metavar="C",
+                        help="Base channel count for NAFNet models (default: 32).")
+    parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
+                        help="NAFNet size preset.  --naf-base overrides base_channels when both given.")
+    parser.add_argument("--num-frames", type=int, default=5, metavar="T",
+                        help="Temporal window size for --model temporal (default: 5).")
     parser.add_argument("--output", required=True, metavar="DIR")
     parser.add_argument("--dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--verify", action="store_true",
                         help="Reload and verify exported tensors against state_dict.")
     args = parser.parse_args()
 
-    cfg_map = {"lite": ModelConfig.lite, "standard": ModelConfig.standard, "heavy": ModelConfig.heavy}
-    config = cfg_map[args.size]()
-    model_cls = NEFTemporal if args.model == "temporal" else NEFResidual
-    model = model_cls(config)
+    _preset_map = {
+        "tiny": NAFNetConfig.tiny,
+        "small": NAFNetConfig.small,
+        "standard": NAFNetConfig.standard,
+        "wide": NAFNetConfig.wide,
+    }
+    naf_config = _preset_map[args.naf_preset]() if args.naf_preset else NAFNetConfig(base_channels=args.naf_base)
+    if args.naf_preset and args.naf_base != 32:
+        naf_config.base_channels = args.naf_base
+    if args.model == "temporal":
+        model = NAFNetTemporal(naf_config, num_frames=args.num_frames)
+    else:
+        model = NAFNet(naf_config)
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     state = ckpt.get("model_state_dict", ckpt)

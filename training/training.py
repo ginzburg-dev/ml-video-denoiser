@@ -1,4 +1,4 @@
-"""Training loop for NEFResidual and NEFTemporal.
+"""Training loop for NAFNet denoisers.
 
 Supports:
   - Mixed-precision training via torch.amp
@@ -9,7 +9,7 @@ Supports:
   - Two-stage temporal training: warm-start from a spatial checkpoint,
     optionally freeze spatial layers to train temporal components first
 
-Stage 1 — train spatial model:
+Stage 1 — train spatial model (NAFNet):
     uv run python training.py \\
         --model spatial \\
         --data /path/to/clean/images \\
@@ -39,7 +39,7 @@ Usage — synthetic noise only:
     uv run python training.py \\
         --model spatial \\
         --data /path/to/clean/images \\
-        --output checkpoints/spatial_standard \\
+        --output checkpoints/spatial \\
         --epochs 300
 
 Usage — paired data only:
@@ -83,7 +83,7 @@ from dataset import (
     VideoSequenceDataset,
 )
 from losses import NoiseWeightedL1Loss
-from models import ModelConfig, NEFResidual, NEFTemporal, freeze_spatial, load_spatial_weights
+from models import NAFNet, NAFNetConfig, NAFNetTemporal, freeze_spatial, load_spatial_weights
 from noise_generators import (
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
@@ -220,7 +220,7 @@ def train(
     """Run the training loop.
 
     Args:
-        model: NEFResidual or NEFTemporal instance.
+        model: Spatial or temporal denoiser instance.
         loader: Training DataLoader.
         val_loader: Optional validation DataLoader for PSNR tracking.
         output_dir: Directory to save checkpoints and TensorBoard logs.
@@ -385,12 +385,23 @@ def build_parser() -> argparse.ArgumentParser:
     silently interpreted as ``--noise-profile``.
     """
     parser = argparse.ArgumentParser(
-        description="Train NEFResidual or NEFTemporal.",
+        description="Train NAFNet denoisers.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
     parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
-    parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
+    parser.add_argument("--naf-base", type=int, default=32, metavar="C",
+                        help="Base channel count for NAFNet residual/temporal models (default: 32).  "
+                             "Overrides --naf-preset base_channels when both are given.")
+    parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
+                        help="NAFNet size preset: tiny (~0.4M), small (~7M), standard (~24M), "
+                             "wide (~67M).  When set, uses the preset block counts and "
+                             "base_channels; --naf-base overrides the base_channels only.")
+    parser.add_argument("--num-frames", type=int, default=5, metavar="T",
+                        help="Temporal window size for --model temporal (default: 5).")
+    parser.add_argument("--use-warp", action="store_true",
+                        help="Enable per-level learned warp in the temporal model.  "
+                             "Recommended for real video with motion; leave disabled for render sequences.")
     parser.add_argument("--frames-per-sequence", type=int, default=None, metavar="N",
                         help="For spatial training on sequence folder structures: select N evenly "
                              "spread frames from each sequence subdirectory (first, spread, last). "
@@ -400,8 +411,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Same as --frames-per-sequence but applied to the validation dataset. "
                              "Requires --model spatial and validation data.")
     parser.add_argument("--spatial-weights", default=None, metavar="PATH",
-                        help="Load encoder/bottleneck/decoder/head weights from a NEFResidual "
-                             "checkpoint into NEFTemporal before training. Requires --model temporal.")
+                        help="Load a matching spatial checkpoint into the temporal model before training. "
+                             "Requires --model temporal.")
     parser.add_argument("--freeze-spatial", action="store_true",
                         help="Freeze spatial layers (encoders, bottleneck, decoders, head) — "
                              "only temporal_mix and offset_heads receive gradients. "
@@ -599,17 +610,24 @@ def _validation_patch_repeats(crop_mode: str, grid_size: int) -> int:
 def _config_summary_lines(
     *,
     is_temporal: bool,
+    naf_base: Optional[int] = None,
     random_temporal_windows: bool,
     windows_per_sequence: Optional[int],
-    frames_per_sequence: Optional[int],
-    val_frames_per_sequence: Optional[int],
-    val_mode: Optional[str],
-    val_windows_per_sequence: Optional[int],
+    frames_per_sequence: Optional[int] = None,
+    val_frames_per_sequence: Optional[int] = None,
+    val_mode: Optional[str] = None,
+    val_windows_per_sequence: Optional[int] = None,
     val_crop_mode: str,
     val_grid_size: int,
 ) -> list[str]:
     """Return human-readable startup lines for sampling and validation config."""
     lines: list[str] = []
+
+    label = f"base={naf_base}" if naf_base is not None else "preset"
+    if is_temporal:
+        lines.append(f"Architecture: NAFNet temporal ({label})")
+    else:
+        lines.append(f"Architecture: NAFNet spatial ({label})")
 
     if is_temporal:
         if random_temporal_windows:
@@ -695,8 +713,15 @@ def main() -> None:
         parser.error("Provide --data for synthetic training, --paired-clean/--paired-noisy "
                      "for paired training, or both for mixed training.")
 
-    cfg_map = {"lite": ModelConfig.lite, "standard": ModelConfig.standard, "heavy": ModelConfig.heavy}
-    config = cfg_map[args.size]()
+    _naf_preset_map = {
+        "tiny": NAFNetConfig.tiny,
+        "small": NAFNetConfig.small,
+        "standard": NAFNetConfig.standard,
+        "wide": NAFNetConfig.wide,
+    }
+    naf_config = _naf_preset_map[args.naf_preset]() if args.naf_preset else NAFNetConfig(base_channels=args.naf_base)
+    if args.naf_preset and args.naf_base != 32:
+        naf_config.base_channels = args.naf_base
     match_by_name = not args.no_name_match
     val_mode, val_sources = _validation_mode(args, parser)
     random_temporal_windows, windows_per_sequence = _temporal_sampling_config(args, parser)
@@ -717,7 +742,7 @@ def main() -> None:
         if is_temporal:
             return VideoSequenceDataset(
                 dirs, noise_generator=noise_gen,
-                num_frames=config.num_frames, patch_size=64,
+                num_frames=args.num_frames, patch_size=64,
                 patches_per_clip=val_patch_repeats if for_validation else 16,
                 random_windows=random_temporal_windows and not for_validation,
                 windows_per_sequence=(
@@ -748,7 +773,7 @@ def main() -> None:
         if is_temporal:
             return PairedVideoSequenceDataset(
                 clean_dirs, noisy_dirs,
-                num_frames=config.num_frames, patch_size=64,
+                num_frames=args.num_frames, patch_size=64,
                 patches_per_clip=val_patch_repeats if for_validation else 16,
                 random_windows=random_temporal_windows and not for_validation,
                 windows_per_sequence=(
@@ -818,7 +843,10 @@ def main() -> None:
     if args.freeze_spatial and not is_temporal:
         parser.error("--freeze-spatial requires --model temporal.")
 
-    model_instance = NEFTemporal(config) if is_temporal else NEFResidual(config)
+    if is_temporal:
+        model_instance = NAFNetTemporal(naf_config, num_frames=args.num_frames, use_warp=args.use_warp)
+    else:
+        model_instance = NAFNet(naf_config)
 
     if args.spatial_weights:
         n = load_spatial_weights(model_instance, args.spatial_weights)
@@ -839,6 +867,7 @@ def main() -> None:
 
     for line in _config_summary_lines(
         is_temporal=is_temporal,
+        naf_base=args.naf_base,
         random_temporal_windows=random_temporal_windows,
         windows_per_sequence=windows_per_sequence,
         frames_per_sequence=frames_per_sequence,

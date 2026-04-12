@@ -1,6 +1,6 @@
 #pragma once
 
-// Host-callable CUDA kernel launchers used by the UNet forward pass.
+// Host-callable CUDA kernel launchers shared by the model forward passes.
 // These declarations use only host-side types so this header can be included
 // from plain .cc files as well as .cu files.
 
@@ -41,12 +41,20 @@ void launch_crop(
 // ---------------------------------------------------------------------------
 // Residual subtraction: out[i] = clamp(a[i] - b[i], 0, 1)
 // ---------------------------------------------------------------------------
-// Used in the UNet head: denoised = input − predicted_noise, clamped [0,1].
+// Legacy helper for subtraction-style residual heads.
 void launch_subtract_clamp(
     const __half* a,
     const __half* b,
     __half* out,
     int64_t n,
+    cudaStream_t stream
+);
+
+void launch_concat_channels(
+    const __half* a,
+    const __half* b,
+    __half* output,
+    int N, int C1, int C2, int H, int W,
     cudaStream_t stream
 );
 

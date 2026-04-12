@@ -3,13 +3,13 @@
 #include "denoiser/tensor.h"
 #include "denoiser/weight_loader.h"
 
-// NEFResidual is implemented in Phase 4 — include it conditionally so that
-// this file compiles cleanly as a placeholder test until Phase 4 is complete.
-#if __has_include("denoiser/models/nef_residual.h")
-  #include "denoiser/models/nef_residual.h"
-  #define DENOISER_NEF_RESIDUAL_AVAILABLE 1
+// NAFNet is optional during bring-up — include it conditionally so the rest
+// of the test binary can still compile when the model target is disabled.
+#if __has_include("denoiser/models/nafnet.h")
+  #include "denoiser/models/nafnet.h"
+  #define DENOISER_NAFNET_AVAILABLE 1
 #else
-  #define DENOISER_NEF_RESIDUAL_AVAILABLE 0
+  #define DENOISER_NAFNET_AVAILABLE 0
 #endif
 
 #include <cuda_fp16.h>
@@ -36,7 +36,7 @@ static bool has_cuda_device() {
     if (!has_cuda_device()) GTEST_SKIP() << "No CUDA device available"
 
 #define SKIP_PHASE4() \
-    GTEST_SKIP() << "NEFResidual not yet implemented (Phase 4)"
+    GTEST_SKIP() << "NAFNet not available in this build"
 
 static std::vector<float> to_floats(const Tensor& t) {
     std::vector<__half> raw(static_cast<size_t>(t.numel()));
@@ -52,10 +52,11 @@ static std::vector<float> to_floats(const Tensor& t) {
 // ---------------------------------------------------------------------------
 
 // Verify that slice_channels produces the correct sub-tensor for a skip
-// connection layout — this exercises the non-owning view path that the UNet
+// connection layout — this exercises the non-owning view path that older
+// model code used to split batched feature maps.
 // encoder/decoder use to split a (B*T, C, H, W) temporal batch back into
 // per-frame tensors.
-TEST(UNetSupportTest, SliceChannelsForSkipConnection) {
+TEST(NAFNetSupportTest, SliceChannelsForSkipConnection) {
     SKIP_IF_NO_GPU();
 
     // (1, 4, 2, 2) with values 0..15
@@ -83,9 +84,9 @@ TEST(UNetSupportTest, SliceChannelsForSkipConnection) {
     }
 }
 
-// Verify that Tensor::empty + from_host round-trips at a representative UNet
+// Verify that Tensor::empty + from_host round-trips at a representative model
 // intermediate tensor size (1, 64, 128, 128) without OOM or corruption.
-TEST(UNetSupportTest, IntermediateTensorAllocation) {
+TEST(NAFNetSupportTest, IntermediateTensorAllocation) {
     SKIP_IF_NO_GPU();
 
     // 1 × 64 × 128 × 128 FP16 ≈ 2 MB — well within budget
@@ -97,25 +98,25 @@ TEST(UNetSupportTest, IntermediateTensorAllocation) {
 }
 
 // ---------------------------------------------------------------------------
-// NEFResidual forward pass tests (Phase 4)
+// NAFNet forward pass tests
 //
-// These tests are disabled (DISABLED_ prefix) until NEFResidual is
+// These tests are disabled (DISABLED_ prefix) until NAFNet parity fixtures are
 // implemented.  Run them with:
 //   ./denoiser_tests --gtest_also_run_disabled_tests \
-//       --gtest_filter="*DISABLED_UNetForward*"
+//       --gtest_filter="*DISABLED_NAFNetForward*"
 // ---------------------------------------------------------------------------
 
-#if DENOISER_NEF_RESIDUAL_AVAILABLE
+#if DENOISER_NAFNET_AVAILABLE
 
-class UNetForwardTest : public ::testing::Test {
+class NAFNetForwardTest : public ::testing::Test {
 protected:
     fs::path fixture_dir_;
     std::unique_ptr<WeightStore> store_;
 
     void SetUp() override {
-        fixture_dir_ = fs::path(__FILE__).parent_path() / "fixtures" / "tiny_unet";
+        fixture_dir_ = fs::path(__FILE__).parent_path() / "fixtures" / "tiny_nafnet";
         if (!fs::exists(fixture_dir_ / "manifest.json")) {
-            GTEST_SKIP() << "UNet fixture not found — run tests/gen_fixtures.py first";
+            GTEST_SKIP() << "NAFNet fixture not found — run tests/gen_fixtures.py first";
         }
         if (!has_cuda_device()) {
             GTEST_SKIP() << "No CUDA device available";
@@ -128,9 +129,9 @@ protected:
     }
 };
 
-// Output spatial dimensions must match input (UNet preserves H×W).
-TEST_F(UNetForwardTest, DISABLED_OutputShapeMatchesInput) {
-    NEFResidual model(*store_);
+// Output spatial dimensions must match input.
+TEST_F(NAFNetForwardTest, DISABLED_OutputShapeMatchesInput) {
+    NAFNet model(*store_);
 
     std::vector<__half> data(3 * 32 * 32, __float2half(0.5f));
     auto input = Tensor::from_host(data.data(), {1, 3, 32, 32}, DType::kFloat16);
@@ -146,8 +147,8 @@ TEST_F(UNetForwardTest, DISABLED_OutputShapeMatchesInput) {
 
 // Output values must be in a reasonable range for a denoiser ([0, 1] or
 // close to it for normalised FP16 inputs).
-TEST_F(UNetForwardTest, DISABLED_OutputInRange) {
-    NEFResidual model(*store_);
+TEST_F(NAFNetForwardTest, DISABLED_OutputInRange) {
+    NAFNet model(*store_);
 
     // Slightly noisy image: uniform 0.5 + small perturbation
     const int numel = 3 * 32 * 32;
@@ -169,7 +170,7 @@ TEST_F(UNetForwardTest, DISABLED_OutputInRange) {
 
 // C++ output must match the Python reference within FP16 tolerance.
 // The reference is stored in fixtures/tiny_unet/expected_output.bin (FP32).
-TEST_F(UNetForwardTest, DISABLED_PyTorchParitySmallInput) {
+TEST_F(NAFNetForwardTest, DISABLED_PyTorchParitySmallInput) {
     const auto ref_path = fixture_dir_ / "expected_output.bin";
     if (!fs::exists(ref_path)) {
         GTEST_SKIP() << "Reference output not found: " << ref_path;
@@ -194,7 +195,7 @@ TEST_F(UNetForwardTest, DISABLED_PyTorchParitySmallInput) {
     auto input = Tensor::from_host(in_data.data(), {1, 3, 32, 32}, DType::kFloat16);
     cudaDeviceSynchronize();
 
-    NEFResidual model(*store_);
+    NAFNet model(*store_);
     auto output = model.forward(input);
     auto vals   = to_floats(output);
 
@@ -208,8 +209,8 @@ TEST_F(UNetForwardTest, DISABLED_PyTorchParitySmallInput) {
 
 // Memory should remain stable across 100 repeated forward passes
 // (no allocation leak in workspace cache or elsewhere).
-TEST_F(UNetForwardTest, DISABLED_VRAMStableUnder100Iters) {
-    NEFResidual model(*store_);
+TEST_F(NAFNetForwardTest, DISABLED_VRAMStableUnder100Iters) {
+    NAFNet model(*store_);
 
     std::vector<__half> data(3 * 32 * 32, __float2half(0.5f));
     auto input = Tensor::from_host(data.data(), {1, 3, 32, 32}, DType::kFloat16);
@@ -239,11 +240,10 @@ TEST_F(UNetForwardTest, DISABLED_VRAMStableUnder100Iters) {
     }
 }
 
-#else // !DENOISER_NEF_RESIDUAL_AVAILABLE
+#else // !DENOISER_NAFNET_AVAILABLE
 
-// Stub test to keep the test binary non-empty when Phase 4 is not yet built.
-TEST(UNetForwardTest, Phase4NotYetImplemented) {
+TEST(NAFNetForwardTest, NotYetBuilt) {
     SKIP_PHASE4();
 }
 
-#endif // DENOISER_NEF_RESIDUAL_AVAILABLE
+#endif // DENOISER_NAFNET_AVAILABLE

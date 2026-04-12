@@ -1,16 +1,16 @@
 """Generate test fixtures for C++ gtest integration tests.
 
 Produces:
-    tests/fixtures/tiny_unet/
+    tests/fixtures/tiny_nafnet/
         manifest.json            — weight store manifest
         weights/*.bin            — exported weight binaries
         input.bin                — FP32 flat array (3 × 32 × 32)
         expected_output.bin      — FP32 flat array (3 × 32 × 32), Python FP16 output
 
-The tiny model uses enc_channels=[8, 16] (2 levels) so the fixture is small
+The tiny model uses a small 3-level NAFNet so the fixture is small
 (~50 KB total) and fast to generate / load in tests.
 
-The C++ parity test loads both files, runs the same input through NEFResidual,
+The C++ parity test loads both files, runs the same input through NAFNet,
 and checks that max pixel diff ≤ 0.005.
 
 Usage (from the repo root):
@@ -33,7 +33,7 @@ TRAINING_DIR = REPO_ROOT / "training"
 if str(TRAINING_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINING_DIR))
 
-from models import ModelConfig, NEFResidual  # noqa: E402
+from models import NAFNet, NAFNetConfig  # noqa: E402
 from export import export_model              # noqa: E402
 
 
@@ -41,13 +41,11 @@ from export import export_model              # noqa: E402
 # Tiny model config (not exposed in ModelConfig — defined here only)
 # ---------------------------------------------------------------------------
 
-def tiny_config() -> ModelConfig:
-    """2-level UNet, very small channels — fast fixture for unit tests."""
-    return ModelConfig(
-        enc_channels=[8, 16],
-        in_channels=3,
-        out_channels=3,
-    )
+def tiny_config() -> NAFNetConfig:
+    """Very small NAFNet — fast fixture for unit tests."""
+    cfg = NAFNetConfig.tiny()
+    cfg.base_channels = 8
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +53,7 @@ def tiny_config() -> ModelConfig:
 # ---------------------------------------------------------------------------
 
 def generate(fixture_dir: Path, seed: int = 42) -> None:
-    """Build tiny_unet fixture under *fixture_dir*."""
+    """Build tiny_nafnet fixture under *fixture_dir*."""
     fixture_dir.mkdir(parents=True, exist_ok=True)
 
     torch.manual_seed(seed)
@@ -63,7 +61,7 @@ def generate(fixture_dir: Path, seed: int = 42) -> None:
 
     device = torch.device("cpu")  # fixtures are device-agnostic
     cfg    = tiny_config()
-    model  = NEFResidual(cfg).to(device).eval()
+    model  = NAFNet(cfg).to(device).eval()
 
     # --- Export weights ---
     export_model(model, fixture_dir, dtype="float16")
@@ -111,7 +109,7 @@ def generate(fixture_dir: Path, seed: int = 42) -> None:
         raise RuntimeError("Weight export round-trip verification failed!")
 
     print(f"\nFixture ready in: {fixture_dir}")
-    print(f"  Model:  enc_channels={cfg.enc_channels}, num_levels={cfg.num_levels}")
+    print(f"  Model:  base_channels={cfg.base_channels}, num_levels={cfg.num_levels}")
     print(f"  Input:  shape=(1, 3, 32, 32), range=[{input_np.min():.3f}, {input_np.max():.3f}]")
     print(f"  Output: range=[{output_flat.min():.3f}, {output_flat.max():.3f}]")
 
@@ -124,13 +122,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out", default=None,
-        help="Output directory (default: tests/fixtures/tiny_unet next to this script)"
+        help="Output directory (default: tests/fixtures/tiny_nafnet next to this script)"
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     out_dir = Path(args.out) if args.out else (
-        Path(__file__).resolve().parent / "fixtures" / "tiny_unet"
+        Path(__file__).resolve().parent / "fixtures" / "tiny_nafnet"
     )
     generate(out_dir, seed=args.seed)
 

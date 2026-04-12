@@ -31,7 +31,7 @@ from torch import Tensor
 
 from dataset import _load_image as _load_dataset_image
 from dataset import _pad_frame_to_shape
-from models import ModelConfig, NEFResidual, NEFTemporal
+from models import NAFNet, NAFNetConfig, NAFNetTemporal
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +302,14 @@ def _save_image(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Denoise images and evaluate quality.")
     parser.add_argument("--checkpoint", required=True, metavar="PATH")
-    parser.add_argument("--model", choices=["residual", "temporal"], default="residual")
-    parser.add_argument("--size", choices=["lite", "standard", "heavy"], default="standard")
+    parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
+    parser.add_argument("--naf-base", type=int, default=32, metavar="C",
+                        help="Base channel count for NAFNet models (default: 32).")
+    parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
+                        help="NAFNet size preset (tiny/small/standard/wide).  "
+                             "--naf-base overrides base_channels when both are given.")
+    parser.add_argument("--num-frames", type=int, default=5, metavar="T",
+                        help="Temporal window size for --model temporal (default: 5).")
     parser.add_argument("--input", default=None, metavar="DIR",
                         help="Input directory of noisy images (no ground truth).")
     parser.add_argument("--noisy", default=None, metavar="DIR",
@@ -320,10 +326,19 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    cfg_map = {"lite": ModelConfig.lite, "standard": ModelConfig.standard, "heavy": ModelConfig.heavy}
-    config = cfg_map[args.size]()
-    model_cls = NEFTemporal if args.model == "temporal" else NEFResidual
-    model = model_cls(config)
+    _preset_map = {
+        "tiny": NAFNetConfig.tiny,
+        "small": NAFNetConfig.small,
+        "standard": NAFNetConfig.standard,
+        "wide": NAFNetConfig.wide,
+    }
+    naf_config = _preset_map[args.naf_preset]() if args.naf_preset else NAFNetConfig(base_channels=args.naf_base)
+    if args.naf_preset and args.naf_base != 32:
+        naf_config.base_channels = args.naf_base
+    if args.model == "temporal":
+        model = NAFNetTemporal(naf_config, num_frames=args.num_frames)
+    else:
+        model = NAFNet(naf_config)
 
     try:
         ckpt = torch.load(args.checkpoint, map_location=device)
@@ -337,7 +352,7 @@ def main() -> None:
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.to(device).eval()
-    print(f"Loaded {args.model}/{args.size} from {args.checkpoint}")
+    print(f"Loaded nafnet/{args.model} from {args.checkpoint}")
 
     # Determine image pairs
     _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".exr"}

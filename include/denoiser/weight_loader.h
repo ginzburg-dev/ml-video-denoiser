@@ -28,13 +28,14 @@ struct Manifest {
     std::vector<LayerEntry> layers;
 
     struct Architecture {
-        std::string type;       // "nef_residual" or "nef_temporal"
+        std::string type;       // "nafnet_residual" or "nafnet_temporal"
         std::vector<int> enc_channels;
         int num_levels = 0;
+        int base_channels = 32;
         int in_channels = 3;
         int out_channels = 3;
-        int num_frames = 5;     // NEFTemporal only
-        int deform_groups = 8;  // NEFTemporal only
+        int num_frames = 5;     // NAFNetTemporal only
+        bool use_warp = false;  // NAFNetTemporal only
     } architecture;
 };
 

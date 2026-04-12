@@ -11,9 +11,9 @@ The denoiser is split into two independent layers:
 
 ## Models
 
-### NEFResidual (single-frame spatial)
+### NAFNet (single-frame spatial)
 
-A 4-level encoder-decoder UNet with residual learning.  The network predicts the noise component; the output is obtained by subtracting that from the input:
+A NAFNet encoder-decoder with additive residual learning. The network predicts a correction and adds it back to the input beauty:
 
 ```
 output = clamp(input − predicted_noise, 0, 1)
@@ -53,9 +53,9 @@ Conv2d(enc[0]=64 → 3, k=1)    ← 1×1 conv, no BN
 
 ---
 
-### NEFTemporal (5-frame deformable)
+### NAFNetTemporal (multi-frame)
 
-Extends NEFResidual with inter-frame motion compensation using DCNv2-style deformable convolutions.
+Extends the spatial NAFNet backbone with per-level temporal mixing and an optional learned bilinear warp.
 
 **Reference frame**: centre frame (index `T//2 = 2`).
 
@@ -76,7 +76,7 @@ Extends NEFResidual with inter-frame motion compensation using DCNv2-style defor
 
 5. Shared decoder (uses fused temporal skips)
 
-6. Head + residual subtraction (same as NEFResidual)
+6. Head + additive residual output (same as NAFNet)
 ```
 
 **Deformable groups**: 8 (default).  Groups partition the channel dimension so each group learns independent offsets, enabling different motion patterns per feature group.
@@ -124,7 +124,7 @@ RAII wrapper around `cudaMalloc`.  Move-only.  NCHW layout.
 | `deform_im2col.cuh` | DCNv2: fractional bilinear sampling + modulation → im2col buffer |
 | `fp16_utils.cuh` | Device helpers: `half_to_float`, `clamp_half`, `fma_fp32_to_half` |
 
-### Memory layout (NEFResidual, standard, 1080p)
+### Memory layout (NAFNet, standard, 1080p)
 
 | Tensor | Shape | Size |
 |---|---|---|

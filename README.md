@@ -1,7 +1,7 @@
 # ML Video Denoiser
 
 GPU-accelerated video / image denoiser.  
-Python training (NEFResidual + NEFTemporal) → raw weight export → C++ CLI inference with no ONNX / LibTorch dependency.
+Python training (NAFNet) → raw weight export → C++ CLI inference with no ONNX / LibTorch dependency.
 
 ---
 
@@ -10,7 +10,7 @@ Python training (NEFResidual + NEFTemporal) → raw weight export → C++ CLI in
 ```
 ml-video-denoiser/
 ├── training/                    Python training pipeline (uv-managed)
-│   ├── models.py                NEFResidual, NEFTemporal, spatial weight transfer + freeze helpers
+│   ├── models.py                NAFNet architectures, spatial weight transfer + freeze helpers
 │   ├── dataset.py               PatchDataset, VideoSequenceDataset,
 │   │                              PairedPatchDataset, PairedVideoSequenceDataset,
 │   │                              CombinedDataset
@@ -32,11 +32,11 @@ ml-video-denoiser/
 │   ├── tensor.cu                RAII CUDA tensor
 │   ├── weight_loader.cc         mmap + lazy H2D upload
 │   ├── layers/                  Conv2d, BatchNorm2d, ReLU, Upsample, MaxPool2d, DeformConv2d
-│   ├── models/                  nef_residual.cu, nef_temporal.cu
+│   ├── models/                  nafnet.cu, nafnet_temporal.cu
 │   ├── io/                      image_io.cc (stb), exr_io.cc (tinyexr), video_io.cc (ffmpeg shell)
 │   └── kernels/                 bn_inference, concat, model_kernels, deform_im2col
 ├── include/denoiser/            Public C++ headers
-├── cli/main.cc                  nef_denoise CLI
+├── cli/main.cc                  denoiser CLI
 ├── tests/                       C++ gtests + Python integration tests
 │   ├── gen_fixtures.py          Generates tiny_unet fixture for parity tests
 │   ├── gen_sample_images.py     Generates bundled 128×128 PNGs for smoke tests
@@ -76,8 +76,8 @@ What the integration suite covers without any external data:
 | Group | What it tests |
 |---|---|
 | `TestExportRoundtrip` | `export.py` produces correct manifest + `.bin` files |
-| `TestNEFResidualPython` | Python model output shape, clamping, reflect-padding |
-| `TestCppGtests` | All C++ unit tests (tensor, weight loader, conv, BN, UNet parity) |
+| `TestNAFNetPython` | Python model output shape, reflect-padding, finite output |
+| `TestCppGtests` | All C++ unit tests (tensor, weight loader, conv, BN, NAFNet parity) |
 | `TestPythonCppParity` | Python ↔ C++ pixel-level agreement (max diff < 0.005) |
 | `TestCLI` | CLI binary: single image, directory, error handling |
 | `TestTrainingSmokeTest` | 2-epoch train on bundled PNGs — loss decreases, checkpoint saves, resume works |
@@ -148,7 +148,7 @@ cd training && uv run python ../tests/gen_fixtures.py && cd ..
 # Run DISABLED parity tests (require fixture)
 ./build/tests/denoiser_tests \
     --gtest_also_run_disabled_tests \
-    --gtest_filter="UNetForwardTest.*"
+    --gtest_filter="NAFNetForwardTest.*"
 ```
 
 ### 5. Integration tests (Python + C++)
@@ -180,18 +180,18 @@ uv run pytest tests/ -v
 
 #### `test_models.py`
 
-Tests for `NEFResidual` and `NEFTemporal` model architectures.
+Tests for `NAFNet` and `NAFNetTemporal` model architectures.
 
 | Test class | What it covers |
 |---|---|
-| `TestConvBnRelu` | Output shape and channel count |
-| `TestEncoderBlock` | Returns (pooled, skip) with correct shapes |
-| `TestDecoderBlock` | Upsample + skip concat + correct output shape |
-| `TestNEFResidualForward` | Full forward pass shape, reflect-pad stripping, output is finite |
-| `TestNEFResidualConfigs` | Lite / standard / heavy config channel counts |
-| `TestNEFTemporalForward` | 5-frame clip → single denoised frame, correct shape, identity at init |
-| `TestNEFTemporalConfigs` | Temporal model with all three config sizes |
-| `TestNEFTemporalWarp` | `use_warp=True` — output shape correct, identity at init |
+| `TestPadding` | `_pad_to_multiple` / `_unpad` — divisibility, roundtrip, no-op |
+| `TestNAFNetForward` | Full forward pass shape, odd spatial dims, batch size 2, gradient flow |
+| `TestNAFNetAuxChannels` | `in_channels=9` input → `(B,3,H,W)` output |
+| `TestNAFNetIdentityInit` | Output ≈ input[:,:3] at epoch 0 (zero-init ending) |
+| `TestNAFNetConfigs` | Tiny / small / standard / wide presets build and run; tiny < wide params |
+| `TestNAFNetTemporalForward` | 5-frame clip → single denoised frame, correct shape, identity at init |
+| `TestNAFNetTemporalConfigs` | Temporal model with tiny and small presets |
+| `TestNAFNetTemporalWarp` | `use_warp=True` — output shape correct |
 | `TestSpatialWeightTransfer` | `load_spatial_weights` transfers all matching keys; temporal keys untouched |
 | `TestFreezeUnfreeze` | `freeze_spatial` / `unfreeze_spatial` set `requires_grad` correctly |
 
@@ -283,10 +283,10 @@ uv run pytest ../tests/test_integration.py -v
 | Test class | What it covers |
 |---|---|
 | `TestExportRoundtrip` | Python export → C++ weight loader — all tensors match |
-| `TestNEFResidualPython` | Python model forward pass shape, clamp, padding on random input |
+| `TestNAFNetPython` | Python model forward pass shape, padding, and output sanity on random input |
 | `TestCppGtests` | Invokes `./build/tests/denoiser_tests`; all C++ gtests pass |
 | `TestPythonCppParity` | Same input → Python model vs C++ engine → max pixel diff < 0.005 |
-| `TestCLI` | `nef_denoise` binary: single PNG, directory of PNGs, bad-path error |
+| `TestCLI` | `denoiser` binary: single PNG, directory of PNGs, bad-path error |
 | `TestTrainingSmokeTest` | 2-epoch train on bundled 128×128 PNGs; loss decreases; checkpoint saves; resume works |
 | `TestPSNRRegression` | Random-init model output is finite (no NaN/Inf) on a noisy input |
 
@@ -402,7 +402,7 @@ uv run python training.py \
 
 ### Temporal model training
 
-The `--model temporal` flag trains the 5-frame `NEFTemporal` model.
+The `--model temporal` flag trains the 5-frame `NAFNetTemporal` model.
 Training directories must be **sequence roots** whose immediate subdirectories
 are frame sequences (one folder per clip):
 
@@ -512,9 +512,9 @@ uv run python training.py \
 
 ### Two-stage temporal training
 
-Training `NEFTemporal` end-to-end from scratch is less efficient than first
+Training `NAFNetTemporal` end-to-end from scratch is less efficient than first
 building a strong spatial denoiser, then teaching the temporal components on top
-of it.  The `NEFResidual` and `NEFTemporal` encoders / decoders / head are
+of it.  The `NAFNet` and `NAFNetTemporal` spatial backbone tensors are
 architecturally identical, so weights transfer directly.
 
 **Stage 1 — train the spatial model:**
@@ -529,8 +529,8 @@ uv run python training.py \
 
 **Stage 2 — load spatial weights, train temporal components only:**
 
-`--spatial-weights` transfers the encoder / bottleneck / decoder / head from the
-`NEFResidual` checkpoint.  `--freeze-spatial` freezes those layers so only
+`--spatial-weights` transfers the spatial backbone from the
+`NAFNet` checkpoint.  `--freeze-spatial` freezes those layers so only
 `temporal_mix` (and `offset_heads` when `use_warp=True`) receive gradients.
 
 ```bash
@@ -739,25 +739,25 @@ uv run python infer.py \
 
 ```bash
 # Single image
-./build/nef_denoise \
+./build/denoiser \
     --model weights/spatial_standard/manifest.json \
     --input photo.png \
     --output photo_denoised.png
 
 # Image directory
-./build/nef_denoise \
+./build/denoiser \
     --model weights/spatial_standard/manifest.json \
     --input frames/ \
     --output frames_denoised/
 
 # Video (requires ffmpeg on PATH)
-./build/nef_denoise \
+./build/denoiser \
     --model weights/spatial_standard/manifest.json \
     --input clip.mp4 \
     --output clip_denoised.mp4
 
 # EXR (HDR, linear values preserved)
-./build/nef_denoise \
+./build/denoiser \
     --model weights/spatial_standard/manifest.json \
     --input render.exr \
     --output render_denoised.exr
@@ -779,31 +779,57 @@ CLI options:
 
 ## Architecture
 
-### NEFResidual (spatial)
+### NAFNet — recommended for EXR / HDR data
 
-4-level UNet (`enc_channels = [64, 128, 256, 512]` for standard).  
-Predicts a noise residual and subtracts it from the input — no clamping applied, full dynamic range preserved.  
-Reflect-pads input to a multiple of `2^num_levels`, strips padding before returning.
+Single-frame spatial denoiser based on NAFNet (ECCV 2022, Chen et al.).
 
-### NEFTemporal (multi-frame)
+Key design choices:
 
-Shared encoder applied to all T frames as a batch.  
-At each encoder scale, neighbour features are averaged and concatenated with the reference frame's features; a 1×1 conv learns how much to pull from the temporal context.  
-Reference frame = centre frame (index `num_frames // 2`).  
-No deformable alignment by default — Monte Carlo render noise is pixel-independent across frames and averages out naturally without warping.
+| Component | NAFNet |
+|---|---|
+| Normalisation | `LayerNorm2d` (per image, per channel) |
+| Activation | `SimpleGate` (x₁ × x₂) — no dead neurons |
+| Skip connections | additive (`x + skip`) — no extra merge conv |
+| Downsample | strided `Conv2d` — fully learnable |
+| Upsample | `PixelShuffle` — artefact-free |
 
-**Optional learned warp** (`ModelConfig.use_warp = True`):  
+`LayerNorm2d` normalises each channel independently **per image**, making it immune to batch-size effects and HDR value range variation — the main reason NAFNet converges faster on EXR render data.
+
+Block-level `β` / `γ` scalars are zero-initialised so every NAFBlock is exact identity at epoch 0; no LR warm-up required.
+
+**Sizes** (configured via `NAFNetConfig`):
+
+| Preset | `base_channels` | Block counts (enc / mid / dec) | Params |
+|---|---|---|---|
+| `NAFNetConfig.tiny()` | 16 | (1,1,1) / 1 / (1,1,1) | ~0.4 M |
+| `NAFNetConfig.small()` | 32 | (1,1,1,1) / 1 / (1,1,1,1) | ~7 M |
+| `NAFNetConfig.standard()` | 32 | (1,1,1,28) / 1 / (1,1,1,1) | ~24 M |
+| `NAFNetConfig.wide()` | 64 | (1,1,1,28) / 1 / (1,1,1,1) | ~67 M |
+| custom (`--naf-base C`) | C | standard block counts | scales with C² |
+
+Train with:
+```bash
+uv run python training.py \
+    --model spatial \
+    --data /path/to/sequences \
+    --frames-per-sequence 8 \
+    --output checkpoints/spatial_naf \
+    --epochs 300
+```
+
+---
+
+### NAFNetTemporal (multi-frame)
+
+Shared NAFNet encoder applied to all T frames as a batch.
+At each encoder scale, neighbour features are averaged and concatenated with the reference frame's features; a 1×1 conv learns how much to pull from the temporal context.
+Reference frame = centre frame (index `num_frames // 2`).
+No learned warp by default — Monte Carlo render noise is pixel-independent across frames and averages out naturally without warping.
+
+**Optional learned warp** (`--use-warp`):
 Each neighbour feature map is warped to the reference before mixing using a per-level offset head — `Conv2d(2C, 2, 1)` predicting a dense `(dx, dy)` displacement field applied via bilinear `grid_sample`. Use this for real video with significant camera or object motion; leave disabled for render sequences.
 
-**Model sizes** (configured via `ModelConfig`):
-
-| Size | `enc_channels` | NEFResidual params | NEFTemporal params |
-|---|---|---|---|
-| `lite` | `[32, 64, 128, 256]` | ~2 M | ~2 M + temporal |
-| `standard` | `[64, 128, 256, 512]` | ~8 M | ~8 M + temporal |
-| `heavy` | `[96, 192, 384, 768]` | ~18 M | ~18 M + temporal |
-
-At epoch 0 both models are exact identity (head zero-init, temporal mix init = ref passthrough).
+At epoch 0 both NAFNet models are exact identity via zero-init ending conv and temporal/reference-preserving initialisation.
 
 ### C++ weight format
 

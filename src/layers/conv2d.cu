@@ -12,22 +12,26 @@ namespace denoiser {
 Conv2dLayer::Conv2dLayer(const WeightStore& store,
                          const std::string& weight_name,
                          std::optional<std::string> bias_name,
-                         int pad, int stride, int dilation)
-    : pad_(pad), stride_(stride), dilation_(dilation) {
+                         int pad, int stride, int dilation, int groups)
+    : pad_(pad), stride_(stride), dilation_(dilation), groups_(groups) {
 
     weight_ = &store.get(weight_name);
     if (bias_name.has_value()) {
         bias_ = &store.get(*bias_name);
     }
 
-    // Infer dimensions from weight shape: (C_out, C_in, kH, kW)
+    if (groups_ <= 0) {
+        throw std::runtime_error("Conv2dLayer: groups must be > 0");
+    }
+
+    // Infer dimensions from weight shape: (C_out, C_in/groups, kH, kW)
     const auto& sh = weight_->shape();
     if (sh.size() != 4) {
         throw std::runtime_error("Conv2dLayer: weight must be 4-D, got " +
                                  std::to_string(sh.size()) + "-D");
     }
     out_channels_ = static_cast<int>(sh[0]);
-    in_channels_  = static_cast<int>(sh[1]);
+    in_channels_  = static_cast<int>(sh[1]) * groups_;
     kernel_h_     = static_cast<int>(sh[2]);
     kernel_w_     = static_cast<int>(sh[3]);
 
@@ -41,7 +45,7 @@ Conv2dLayer::Conv2dLayer(const WeightStore& store,
         CUDNN_DATA_HALF,          // FP16 weights
         CUDNN_TENSOR_NCHW,
         out_channels_,
-        in_channels_,
+        static_cast<int>(sh[1]),
         kernel_h_,
         kernel_w_
     ));
@@ -56,6 +60,7 @@ Conv2dLayer::Conv2dLayer(const WeightStore& store,
         CUDNN_CROSS_CORRELATION,
         CUDNN_DATA_FLOAT           // accumulate in FP32 (required for FP16 TC path)
     ));
+    CUDNN_CHECK(cudnnSetConvolutionGroupCount(conv_desc_, groups_));
     // Enable Tensor Core math (FP16→FP32 promotion happens automatically)
     CUDNN_CHECK(cudnnSetConvolutionMathType(
         conv_desc_, CUDNN_TENSOR_OP_MATH_ALLOW_CONVERSION));

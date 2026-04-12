@@ -70,9 +70,10 @@ static fs::path create_bn_fixture(const fs::path& dir) {
   "model": "test_bn",
   "dtype": "float32",
   "architecture": {
-    "type": "nef_residual",
+    "type": "nafnet_residual",
     "enc_channels": [32],
     "num_levels": 1,
+    "base_channels": 32,
     "in_channels": 3,
     "out_channels": 3
   },

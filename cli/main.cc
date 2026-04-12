@@ -1,5 +1,5 @@
-#include "denoiser/models/nef_residual.h"
-#include "denoiser/models/nef_temporal.h"
+#include "denoiser/models/nafnet.h"
+#include "denoiser/models/nafnet_temporal.h"
 #include "denoiser/weight_loader.h"
 #include "denoiser/tensor.h"
 #include "denoiser/io/image_io.h"
@@ -140,10 +140,50 @@ static fs::path default_output(const fs::path& input) {
 // ---------------------------------------------------------------------------
 
 // Spatial (single-frame) denoising of one image.
-static Tensor denoise_spatial(const NEFResidual& model,
+static Tensor denoise_spatial(const NAFNet& model,
                                const Tensor& input,
                                cudaStream_t stream) {
     return model.forward(input, stream);
+}
+
+static Tensor denoise_temporal(const NAFNetTemporal& model,
+                               const Tensor& clip,
+                               cudaStream_t stream) {
+    return model.forward(clip, stream);
+}
+
+static Tensor make_temporal_clip(const std::vector<fs::path>& images,
+                                 int center_idx,
+                                 int num_frames,
+                                 cudaStream_t stream) {
+    if (images.empty()) {
+        throw std::runtime_error("make_temporal_clip: no images provided");
+    }
+
+    const int radius = num_frames / 2;
+    auto first = load_any_image(images.front(), stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    const int N = static_cast<int>(first.batch());
+    const int C = static_cast<int>(first.channels());
+    const int H = static_cast<int>(first.height());
+    const int W = static_cast<int>(first.width());
+    auto clip = Tensor::empty({N, num_frames, C, H, W}, DType::kFloat16);
+
+    for (int t = 0; t < num_frames; ++t) {
+        const int src_idx = std::clamp(center_idx + t - radius, 0, static_cast<int>(images.size()) - 1);
+        auto frame = (src_idx == 0 && t == 0) ? std::move(first) : load_any_image(images[src_idx], stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (frame.shape() != std::vector<int64_t>({N, C, H, W})) {
+            throw std::runtime_error("Temporal inference requires all frames in a sequence to share shape");
+        }
+        CUDA_CHECK(cudaMemcpyAsync(
+            clip.data_f16() + static_cast<int64_t>(t) * N * C * H * W,
+            frame.data_f16(),
+            static_cast<size_t>(N) * C * H * W * sizeof(__half),
+            cudaMemcpyDeviceToDevice,
+            stream));
+    }
+    return clip;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,16 +225,54 @@ int main(int argc, char** argv) {
         // --- Dispatch on mode ---
         const fs::path input_path(args.input_path);
 
-        if (args.mode == "temporal") {
-            // --- Temporal mode (not yet fully wired — placeholder) ---
-            throw std::runtime_error(
-                "Temporal mode requires a 5-frame clip input. "
-                "Pass a directory containing exactly num_frames image files.");
+        const bool temporal_mode =
+            args.mode == "temporal" || store.manifest().architecture.type == "nafnet_temporal";
+
+        if (temporal_mode) {
+            if (!fs::is_directory(input_path)) {
+                throw std::runtime_error("Temporal mode expects an input directory of frames");
+            }
+
+            NAFNetTemporal model(store);
+            std::cout << "Model: NAFNetTemporal, enc_channels=[";
+            for (size_t i = 0; i < model.enc_channels().size(); ++i) {
+                if (i) std::cout << ",";
+                std::cout << model.enc_channels()[i];
+            }
+            std::cout << "], frames=" << model.num_frames()
+                      << ", use_warp=" << (model.use_warp() ? "true" : "false") << "\n";
+
+            std::vector<fs::path> images;
+            for (const auto& entry : fs::directory_iterator(input_path)) {
+                if (is_image(entry.path())) images.push_back(entry.path());
+            }
+            std::sort(images.begin(), images.end());
+            if (images.empty()) {
+                throw std::runtime_error("Temporal mode found no input frames");
+            }
+
+            const fs::path out_dir = args.output_path.empty()
+                ? input_path.parent_path() / (input_path.filename().string() + "_denoised")
+                : fs::path(args.output_path);
+            fs::create_directories(out_dir);
+
+            std::cout << "Processing " << images.size() << " frames temporally → " << out_dir << "\n";
+            for (int idx = 0; idx < static_cast<int>(images.size()); ++idx) {
+                auto clip = make_temporal_clip(images, idx, model.num_frames(), transfer_stream);
+                CUDA_CHECK(cudaStreamSynchronize(transfer_stream));
+                auto out_t = denoise_temporal(model, clip, compute_stream);
+                CUDA_CHECK(cudaStreamSynchronize(compute_stream));
+                save_any_image(out_t, out_dir / images[idx].filename(), nullptr);
+                std::cout << "  " << images[idx].filename() << "\n";
+            }
+
+            CUDA_CHECK(cudaStreamDestroy(compute_stream));
+            CUDA_CHECK(cudaStreamDestroy(transfer_stream));
+            return 0;
         }
 
-        // --- Spatial mode ---
-        NEFResidual model(store);
-        std::cout << "Model: NEFResidual, enc_channels=[";
+        NAFNet model(store);
+        std::cout << "Model: NAFNet, enc_channels=[";
         for (size_t i = 0; i < model.enc_channels().size(); ++i) {
             if (i) std::cout << ",";
             std::cout << model.enc_channels()[i];
