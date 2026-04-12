@@ -26,6 +26,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torch import Tensor
 
 from dataset import _load_image as _load_dataset_image
@@ -202,7 +203,30 @@ def _load_image(path: Path) -> np.ndarray:
     return _load_dataset_image(path)
 
 
-def _save_image(path: Path, img: np.ndarray) -> None:
+def _load_alpha(path: Path) -> Optional[np.ndarray]:
+    if path.suffix.lower() == ".exr":
+        import OpenEXR
+
+        with OpenEXR.File(str(path)) as exr:
+            channels = exr.parts[0].channels
+            channel = channels.get("RGBA") or channels.get("A")
+            if channel is None:
+                return None
+            alpha = np.asarray(channel.pixels, dtype=np.float32)
+            if alpha.ndim == 3:
+                alpha = alpha[..., -1]
+            return np.clip(alpha, 0.0, 1.0)
+
+    with Image.open(path) as pil_img:
+        if "A" not in pil_img.getbands():
+            return None
+        alpha = np.asarray(pil_img.getchannel("A"), dtype=np.float32)
+        if alpha.max() > 1.5:
+            alpha /= 255.0 if alpha.max() <= 255.5 else 65535.0
+        return np.clip(alpha, 0.0, 1.0)
+
+
+def _save_image(path: Path, img: np.ndarray, alpha: Optional[np.ndarray] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     img = img.astype(np.float32)
 
@@ -216,12 +240,25 @@ def _save_image(path: Path, img: np.ndarray) -> None:
             out = np.repeat(out, 3, axis=2)
         elif out.shape[-1] > 3:
             out = out[..., :3]
-        OpenEXR.File({"type": OpenEXR.scanlineimage}, {"RGB": out}).write(str(path))
+        if alpha is not None:
+            alpha = np.clip(alpha.astype(np.float32), 0.0, 1.0)
+            if alpha.shape != out.shape[:2]:
+                raise ValueError("Alpha channel shape does not match RGB output shape.")
+            rgba = np.concatenate([out, alpha[..., None]], axis=-1)
+            OpenEXR.File({"type": OpenEXR.scanlineimage}, {"RGBA": rgba}).write(str(path))
+        else:
+            OpenEXR.File({"type": OpenEXR.scanlineimage}, {"RGB": out}).write(str(path))
         return
 
     import imageio.v3 as iio
 
-    out = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+    out = np.clip(img, 0.0, 1.0)
+    if alpha is not None:
+        alpha = np.clip(alpha.astype(np.float32), 0.0, 1.0)
+        if alpha.shape != out.shape[:2]:
+            raise ValueError("Alpha channel shape does not match RGB output shape.")
+        out = np.concatenate([out, alpha[..., None]], axis=-1)
+    out = (out * 255.0).astype(np.uint8)
     iio.imwrite(str(path), out)
 
 

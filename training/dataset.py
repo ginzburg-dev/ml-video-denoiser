@@ -60,20 +60,55 @@ def _collect_images(dirs: Sequence[str | Path]) -> list[Path]:
     return sorted(set(paths))
 
 
+def _match_named_images(clean_paths: Sequence[Path], noisy_paths: Sequence[Path]) -> list[tuple[Path, Path]]:
+    """Match image paths by stem and raise on missing / extra names."""
+    clean_by_stem = {p.stem: p for p in clean_paths}
+    noisy_by_stem = {p.stem: p for p in noisy_paths}
+
+    if len(clean_by_stem) != len(clean_paths) or len(noisy_by_stem) != len(noisy_paths):
+        raise ValueError("Duplicate image stems detected while matching paired frames by name.")
+
+    clean_stems = set(clean_by_stem)
+    noisy_stems = set(noisy_by_stem)
+    missing_noisy = sorted(clean_stems - noisy_stems)
+    extra_noisy = sorted(noisy_stems - clean_stems)
+    if missing_noisy or extra_noisy:
+        problems: list[str] = []
+        if missing_noisy:
+            problems.append(f"missing noisy frames: {', '.join(missing_noisy[:3])}")
+        if extra_noisy:
+            problems.append(f"unexpected noisy frames: {', '.join(extra_noisy[:3])}")
+        raise ValueError("Frame mismatch between clean and noisy sequences: " + "; ".join(problems))
+
+    return [(clean_by_stem[stem], noisy_by_stem[stem]) for stem in sorted(clean_stems)]
+
+
 def _load_image(path: Path) -> np.ndarray:
-    """Load *path* as a float32 HWC array normalised to [0, 1]."""
+    """Load *path* as a float32 HWC array normalised to [0, 1].
+
+    All PIL image modes (CMYK, P, RGBA, LA, I, …) are converted to plain RGB
+    before the array is extracted, guaranteeing a (H, W, 3) uint8 layout and
+    preventing channel-order colour shifts on CMYK JPEGs, palette PNGs, or
+    images with pre-multiplied alpha.
+    """
     if path.suffix.lower() == ".exr":
         img = _load_exr_image(path)
+        source_dtype = img.dtype
     else:
         with Image.open(path) as pil_img:
-            img = np.array(pil_img)
+            # Always convert to RGB so downstream code always sees (H, W, 3)
+            # uint8, regardless of source mode (palette, CMYK, RGBA, L, …).
+            img = np.array(pil_img.convert("RGB"))
+        source_dtype = img.dtype
 
-    source_dtype = img.dtype
     img = img.astype(np.float32)
+    # EXR images may still be 2-D (single-channel) or have >3 planes.
     if img.ndim == 2:
-        img = img[:, :, np.newaxis]
-    if img.shape[2] > 3:
-        img = img[:, :, :3]  # drop alpha
+        img = np.stack([img, img, img], axis=-1)
+    elif img.shape[2] == 1:
+        img = np.repeat(img, 3, axis=2)
+    elif img.shape[2] > 3:
+        img = img[:, :, :3]
 
     # Normalize integer-backed images; float-backed inputs like EXR are assumed
     # to already be in scene-linear units and are clipped to the model range.
@@ -800,9 +835,11 @@ class PairedVideoSequenceDataset(Dataset):
                     p for p in noisy_sub.iterdir()
                     if p.suffix.lower() in _IMAGE_EXTENSIONS
                 )
-                n = min(len(clean_frames), len(noisy_frames))
-                if n >= num_frames:
-                    sequences.append((clean_frames[:n], noisy_frames[:n]))
+                matched_frames = _match_named_images(clean_frames, noisy_frames)
+                if len(matched_frames) >= num_frames:
+                    matched_clean = [clean_path for clean_path, _ in matched_frames]
+                    matched_noisy = [noisy_path for _, noisy_path in matched_frames]
+                    sequences.append((matched_clean, matched_noisy))
         return sequences
 
     @staticmethod

@@ -461,6 +461,20 @@ class TestPairedVideoSequenceDataset:
         with pytest.raises(ValueError, match="No paired frame sequences"):
             PairedVideoSequenceDataset([clean_root], [empty_noisy])
 
+    def test_frame_name_mismatch_raises(self, tmp_path: Path) -> None:
+        clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=1, n_frames=6)
+        mismatched = noisy_root / "seq_000" / "frame_000003.png"
+        mismatched.rename(noisy_root / "seq_000" / "frame_999999.png")
+
+        with pytest.raises(ValueError, match="Frame mismatch"):
+            PairedVideoSequenceDataset(
+                [clean_root],
+                [noisy_root],
+                num_frames=5,
+                patches_per_clip=1,
+                patch_size=32,
+            )
+
     def test_num_clips_property(self, tmp_path: Path) -> None:
         clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=1, n_frames=8)
         ds = PairedVideoSequenceDataset(
