@@ -33,6 +33,8 @@ Usage — mixed (60% synthetic, 40% paired):
 
 import argparse
 import math
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -121,16 +123,28 @@ def _save_checkpoint(
     best_psnr: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "best_psnr": best_psnr,
-        },
-        path,
-    )
+    payload = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "best_psnr": best_psnr,
+    }
+
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_name = tmp_file.name
+        torch.save(payload, tmp_name)
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name is not None and os.path.exists(tmp_name):
+            os.unlink(tmp_name)
 
 
 def _load_checkpoint(

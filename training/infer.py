@@ -226,7 +226,15 @@ def main() -> None:
     model_cls = NEFTemporal if args.model == "temporal" else NEFResidual
     model = model_cls(config)
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    try:
+        ckpt = torch.load(args.checkpoint, map_location=device)
+    except (OSError, RuntimeError) as exc:
+        parser.error(
+            f"Failed to load checkpoint '{args.checkpoint}'. "
+            "The file is missing, truncated, or corrupted. "
+            "Try another checkpoint such as final.pth or an epoch_XXXX.pth file."
+            f" Original error: {exc}"
+        )
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.to(device).eval()
