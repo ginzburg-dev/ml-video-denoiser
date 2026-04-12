@@ -11,6 +11,7 @@ from noise_generators import (
 )
 from dataset import CombinedDataset
 from training import (
+    _config_summary_lines,
     _dataset_summary_lines,
     _make_noise_generator,
     _temporal_sampling_config,
@@ -176,6 +177,20 @@ class TestTrainingCli:
     def test_validation_patch_repeats_matches_grid_area(self) -> None:
         assert _validation_patch_repeats("grid", 3) == 9
         assert _validation_patch_repeats("center", 3) == 1
+
+    def test_config_summary_lines_include_temporal_modes(self) -> None:
+        lines = _config_summary_lines(
+            is_temporal=True,
+            random_temporal_windows=True,
+            windows_per_sequence=4,
+            val_mode="paired",
+            val_windows_per_sequence=3,
+            val_crop_mode="grid",
+            val_grid_size=2,
+        )
+        assert "Train temporal sampling: random windows (4/sequence/epoch)" in lines
+        assert "Val temporal sampling: deterministic windows (3/sequence)" in lines
+        assert "Val crop mode: grid (2x2)" in lines
 
     def test_dataset_summary_uses_image_count_when_available(self) -> None:
         lines = _dataset_summary_lines("Train", _DummyDataset(128, num_images=8))

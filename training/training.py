@@ -511,6 +511,44 @@ def _validation_patch_repeats(crop_mode: str, grid_size: int) -> int:
     return 1
 
 
+def _config_summary_lines(
+    *,
+    is_temporal: bool,
+    random_temporal_windows: bool,
+    windows_per_sequence: Optional[int],
+    val_mode: Optional[str],
+    val_windows_per_sequence: Optional[int],
+    val_crop_mode: str,
+    val_grid_size: int,
+) -> list[str]:
+    """Return human-readable startup lines for sampling and validation config."""
+    lines: list[str] = []
+
+    if is_temporal:
+        if random_temporal_windows:
+            lines.append(
+                f"Train temporal sampling: random windows ({windows_per_sequence}/sequence/epoch)"
+            )
+        else:
+            lines.append("Train temporal sampling: all sliding windows")
+
+    if val_mode is not None:
+        if is_temporal:
+            if val_windows_per_sequence is None:
+                lines.append("Val temporal sampling: all sliding windows")
+            else:
+                lines.append(
+                    f"Val temporal sampling: deterministic windows ({val_windows_per_sequence}/sequence)"
+                )
+
+        if val_crop_mode == "grid":
+            lines.append(f"Val crop mode: grid ({val_grid_size}x{val_grid_size})")
+        else:
+            lines.append(f"Val crop mode: {val_crop_mode}")
+
+    return lines
+
+
 def _dataset_summary_lines(name: str, dataset: Dataset) -> list[str]:
     """Return human-readable dataset statistics for startup logging."""
     lines = [f"{name}: {len(dataset)} samples/epoch"]
@@ -687,6 +725,17 @@ def main() -> None:
     )
     val_batch_size = 1 if val_ds is not None and val_crop_mode == "full" else args.batch_size
     val_loader = DataLoader(val_ds, batch_size=val_batch_size, num_workers=args.workers) if val_ds else None
+
+    for line in _config_summary_lines(
+        is_temporal=is_temporal,
+        random_temporal_windows=random_temporal_windows,
+        windows_per_sequence=windows_per_sequence,
+        val_mode=val_mode,
+        val_windows_per_sequence=val_windows_per_sequence,
+        val_crop_mode=val_crop_mode,
+        val_grid_size=val_grid_size,
+    ):
+        print(line)
 
     _log_loader_summary("Train", train_ds, train_loader)
     if val_ds is not None and val_loader is not None:
