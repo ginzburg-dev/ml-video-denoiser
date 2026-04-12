@@ -29,6 +29,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from dataset import _load_image as _load_dataset_image
+from dataset import _pad_frame_to_shape
 from models import ModelConfig, NEFResidual, NEFTemporal
 
 
@@ -93,7 +94,7 @@ def denoise_image(
         if tile_size > 0:
             output = _tile_inference(model, x, tile_size, use_amp, device)
         else:
-            with torch.cuda.amp.autocast(enabled=use_amp and device.type == "cuda"):
+            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
                 output = model(x)
 
     return output.squeeze(0).permute(1, 2, 0).cpu().float().numpy()
@@ -120,7 +121,7 @@ def _tile_inference(
             x1, x2 = xi, min(xi + tile_size, w)
             tile = x[:, :, y1:y2, x1:x2]
 
-            with torch.cuda.amp.autocast(enabled=use_amp and device.type == "cuda"):
+            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
                 pred = model(tile)
 
             # Linear ramp blend
@@ -142,6 +143,39 @@ def _make_ramp(h: int, w: int, overlap: int, device: torch.device) -> Tensor:
         rx[: len(ramp)] = ramp
         rx[-len(ramp) :] = ramp.flip(0)
     return (ry.unsqueeze(1) * rx.unsqueeze(0)).unsqueeze(0).unsqueeze(0)
+
+
+def _clip_indices(length: int, centre_idx: int, num_frames: int) -> list[int]:
+    """Return a centred temporal window using edge replication at boundaries."""
+    radius = num_frames // 2
+    return [min(max(centre_idx + offset, 0), length - 1) for offset in range(-radius, radius + 1)]
+
+
+def denoise_temporal_frame(
+    model: torch.nn.Module,
+    sequence: list[np.ndarray],
+    frame_idx: int,
+    device: torch.device,
+    use_amp: bool = True,
+) -> np.ndarray:
+    """Run a temporal model on the window centred at ``frame_idx``."""
+    num_frames = model._num_frames
+    frame_indices = _clip_indices(len(sequence), frame_idx, num_frames)
+    frames = [sequence[i] for i in frame_indices]
+
+    target_h = max(frame.shape[0] for frame in frames)
+    target_w = max(frame.shape[1] for frame in frames)
+    padded_frames = [_pad_frame_to_shape(frame, target_h, target_w) for frame in frames]
+    clip = np.stack([frame.transpose(2, 0, 1) for frame in padded_frames], axis=0)  # (T, C, H, W)
+    x = torch.from_numpy(clip).unsqueeze(0).to(device)  # (1, T, C, H, W)
+
+    model.eval()
+    with torch.no_grad():
+        with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
+            output = model(x)
+
+    ref_h, ref_w = sequence[frame_idx].shape[:2]
+    return output.squeeze(0).permute(1, 2, 0).cpu().float().numpy()[:ref_h, :ref_w]
 
 
 # ---------------------------------------------------------------------------
@@ -220,25 +254,52 @@ def main() -> None:
     use_amp = not args.no_amp
     psnr_values, ssim_values = [], []
 
-    for noisy_path, clean_path in pairs:
-        noisy_img = _load_image(noisy_path)
+    if args.model == "temporal":
+        if args.tile > 0:
+            parser.error("--tile is not supported for temporal inference.")
+        noisy_paths = [noisy_path for noisy_path, _ in pairs]
+        noisy_sequence = [_load_image(path) for path in noisy_paths]
         if args.sigma > 0:
-            noisy_img = (noisy_img + np.random.randn(*noisy_img.shape) * args.sigma).clip(0, 1)
+            noisy_sequence = [
+                (img + np.random.randn(*img.shape) * args.sigma).clip(0, 1)
+                for img in noisy_sequence
+            ]
 
-        output_img = denoise_image(model, noisy_img, device, args.tile, use_amp)
+        for frame_idx, (noisy_path, clean_path) in enumerate(pairs):
+            output_img = denoise_temporal_frame(model, noisy_sequence, frame_idx, device, use_amp)
 
-        if clean_path is not None and clean_path.exists():
-            clean_img = _load_image(clean_path)
-            p = compute_psnr(output_img, clean_img)
-            s = compute_ssim(output_img, clean_img)
-            psnr_values.append(p)
-            ssim_values.append(s)
-            print(f"{noisy_path.name}: PSNR={p:.2f}dB  SSIM={s:.4f}")
-        else:
-            print(f"{noisy_path.name}: denoised")
+            if clean_path is not None and clean_path.exists():
+                clean_img = _load_image(clean_path)
+                p = compute_psnr(output_img, clean_img)
+                s = compute_ssim(output_img, clean_img)
+                psnr_values.append(p)
+                ssim_values.append(s)
+                print(f"{noisy_path.name}: PSNR={p:.2f}dB  SSIM={s:.4f}")
+            else:
+                print(f"{noisy_path.name}: denoised")
 
-        if args.output:
-            _save_image(Path(args.output) / noisy_path.name, output_img)
+            if args.output:
+                _save_image(Path(args.output) / noisy_path.name, output_img)
+    else:
+        for noisy_path, clean_path in pairs:
+            noisy_img = _load_image(noisy_path)
+            if args.sigma > 0:
+                noisy_img = (noisy_img + np.random.randn(*noisy_img.shape) * args.sigma).clip(0, 1)
+
+            output_img = denoise_image(model, noisy_img, device, args.tile, use_amp)
+
+            if clean_path is not None and clean_path.exists():
+                clean_img = _load_image(clean_path)
+                p = compute_psnr(output_img, clean_img)
+                s = compute_ssim(output_img, clean_img)
+                psnr_values.append(p)
+                ssim_values.append(s)
+                print(f"{noisy_path.name}: PSNR={p:.2f}dB  SSIM={s:.4f}")
+            else:
+                print(f"{noisy_path.name}: denoised")
+
+            if args.output:
+                _save_image(Path(args.output) / noisy_path.name, output_img)
 
     if psnr_values:
         print(f"\nMean PSNR: {np.mean(psnr_values):.2f} dB")
