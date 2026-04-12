@@ -10,7 +10,7 @@ Python training (NEFResidual + NEFTemporal) → raw weight export → C++ CLI in
 ```
 ml-video-denoiser/
 ├── training/                    Python training pipeline (uv-managed)
-│   ├── models.py                NEFResidual, NEFTemporal, ConvBnRelu blocks
+│   ├── models.py                NEFResidual, NEFTemporal, spatial weight transfer + freeze helpers
 │   ├── dataset.py               PatchDataset, VideoSequenceDataset,
 │   │                              PairedPatchDataset, PairedVideoSequenceDataset,
 │   │                              CombinedDataset
@@ -187,10 +187,13 @@ Tests for `NEFResidual` and `NEFTemporal` model architectures.
 | `TestConvBnRelu` | Output shape and channel count |
 | `TestEncoderBlock` | Returns (pooled, skip) with correct shapes |
 | `TestDecoderBlock` | Upsample + skip concat + correct output shape |
-| `TestNEFResidualForward` | Full forward pass shape, [0,1] clamp, reflect-pad stripping |
+| `TestNEFResidualForward` | Full forward pass shape, reflect-pad stripping, output is finite |
 | `TestNEFResidualConfigs` | Lite / standard / heavy config channel counts |
-| `TestNEFTemporalForward` | 5-frame clip → single denoised frame, correct shape |
+| `TestNEFTemporalForward` | 5-frame clip → single denoised frame, correct shape, identity at init |
 | `TestNEFTemporalConfigs` | Temporal model with all three config sizes |
+| `TestNEFTemporalWarp` | `use_warp=True` — output shape correct, identity at init |
+| `TestSpatialWeightTransfer` | `load_spatial_weights` transfers all matching keys; temporal keys untouched |
+| `TestFreezeUnfreeze` | `freeze_spatial` / `unfreeze_spatial` set `requires_grad` correctly |
 
 #### `test_dataset.py`
 
@@ -265,6 +268,7 @@ Smoke tests for the training CLI and validation pipeline.
 | `TestValidationPairs` | `--val-clean / --val-noisy` validation runs; val PSNR logged; `best.pth` saved |
 | `TestValidationCropModes` | `center`, `grid`, `full`, `random` crop modes all run without error |
 | `TestCheckpointResume` | Checkpoint from epoch 1 resumes correctly to epoch 2 |
+| `TestSpatialWeightsFlag` | `--spatial-weights` loads correct tensor count; `--freeze-spatial` freezes backbone; both reject `--model residual` |
 
 ### Integration tests (`tests/test_integration.py`)
 
