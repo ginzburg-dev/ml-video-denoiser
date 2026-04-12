@@ -156,6 +156,24 @@ class TestVideoSequenceDataset:
         ds = VideoSequenceDataset([video_seq_dir], num_frames=5)
         assert ds.num_clips == 6  # 10 - 5 + 1
 
+    def test_variable_frame_sizes_are_padded_before_shared_crop(self, tmp_path: Path) -> None:
+        import imageio.v3 as iio
+
+        root = tmp_path / "varying_sequences"
+        seq = root / "seq_001"
+        seq.mkdir(parents=True)
+        for i, width in enumerate([96, 96, 93, 96, 90, 96]):
+            img = np.zeros((96, width, 3), dtype=np.uint8)
+            iio.imwrite(str(seq / f"frame_{i:06d}.png"), img)
+
+        ds = VideoSequenceDataset(
+            [root], num_frames=5, patches_per_clip=1, patch_size=64, augment=False
+        )
+        noisy, clean, sigma_map = ds[0]
+        assert noisy.shape == (5, 3, 64, 64)
+        assert clean.shape == (5, 3, 64, 64)
+        assert sigma_map.shape == (5, 3, 64, 64)
+
 
 # ---------------------------------------------------------------------------
 # Shared fixture helpers for paired datasets
@@ -372,6 +390,31 @@ class TestPairedVideoSequenceDataset:
             [clean_root], [noisy_root], num_frames=5, patches_per_clip=1, patch_size=32
         )
         assert ds.num_clips == 4  # 8 - 5 + 1
+
+    def test_variable_frame_sizes_are_padded_before_shared_crop(self, tmp_path: Path) -> None:
+        import imageio.v3 as iio
+
+        clean_root = tmp_path / "clean"
+        noisy_root = tmp_path / "noisy"
+        clean_seq = clean_root / "scene_001"
+        noisy_seq = noisy_root / "scene_001"
+        clean_seq.mkdir(parents=True)
+        noisy_seq.mkdir(parents=True)
+
+        for i, width in enumerate([96, 94, 96, 91, 96, 92]):
+            clean = np.zeros((96, width, 3), dtype=np.uint8)
+            noisy = np.zeros((96, width, 3), dtype=np.uint8)
+            iio.imwrite(str(clean_seq / f"frame_{i:06d}.png"), clean)
+            iio.imwrite(str(noisy_seq / f"frame_{i:06d}.png"), noisy)
+
+        ds = PairedVideoSequenceDataset(
+            [clean_root], [noisy_root], num_frames=5, patches_per_clip=1,
+            patch_size=64, augment=False
+        )
+        noisy, clean, sigma_map = ds[0]
+        assert noisy.shape == (5, 3, 64, 64)
+        assert clean.shape == (5, 3, 64, 64)
+        assert sigma_map.shape == (5, 3, 64, 64)
 
 
 # ---------------------------------------------------------------------------

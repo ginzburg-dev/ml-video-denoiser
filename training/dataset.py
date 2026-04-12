@@ -124,6 +124,16 @@ def _random_crop(
     return img[top : top + patch_size, left : left + patch_size, :]
 
 
+def _pad_frame_to_shape(frame: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+    """Pad a frame on the bottom/right so it reaches the requested shape."""
+    h, w, _ = frame.shape
+    pad_h = max(0, target_h - h)
+    pad_w = max(0, target_w - w)
+    if pad_h == 0 and pad_w == 0:
+        return frame
+    return np.pad(frame, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+
+
 def _augment(img: np.ndarray) -> np.ndarray:
     """Apply random flip / rotation augmentation (in-place safe)."""
     if random.random() < 0.5:
@@ -277,11 +287,14 @@ class VideoSequenceDataset(Dataset):
 
         # Load all frames
         frames = [_load_image(p) for p in frame_paths]
-        # Determine crop position once (same for all frames)
-        h, w, _ = frames[0].shape
         ps = self._patch_size
-        top = random.randint(0, max(0, h - ps))
-        left = random.randint(0, max(0, w - ps))
+        target_h = max(ps, max(frame.shape[0] for frame in frames))
+        target_w = max(ps, max(frame.shape[1] for frame in frames))
+        frames = [_pad_frame_to_shape(frame, target_h, target_w) for frame in frames]
+
+        # Determine crop position once (same for all frames)
+        top = random.randint(0, target_h - ps)
+        left = random.randint(0, target_w - ps)
         # Determine augmentation seed once
         flip_v = self._augment and random.random() < 0.5
         flip_h = self._augment and random.random() < 0.5
@@ -289,11 +302,6 @@ class VideoSequenceDataset(Dataset):
 
         noisy_frames, clean_frames, sigma_frames = [], [], []
         for frame in frames:
-            # Pad if necessary
-            if h < ps or w < ps:
-                pad_h = max(0, ps - h)
-                pad_w = max(0, ps - w)
-                frame = np.pad(frame, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
             patch = frame[top : top + ps, left : left + ps, :]
             if flip_v:
                 patch = patch[::-1, :, :]
@@ -613,12 +621,24 @@ class PairedVideoSequenceDataset(Dataset):
         clip_idx = idx // self._patches_per_clip
         clean_paths, noisy_paths = self._clips[clip_idx]
 
-        # Load first frame to determine crop position
-        first_clean = _load_image(clean_paths[0])
-        h, w, _ = first_clean.shape
         ps = self._patch_size
-        top  = random.randint(0, max(0, h - ps))
-        left = random.randint(0, max(0, w - ps))
+        clean_imgs = [_load_image(path) for path in clean_paths]
+        noisy_imgs = [_load_image(path) for path in noisy_paths]
+        target_h = max(
+            ps,
+            max(img.shape[0] for img in clean_imgs),
+            max(img.shape[0] for img in noisy_imgs),
+        )
+        target_w = max(
+            ps,
+            max(img.shape[1] for img in clean_imgs),
+            max(img.shape[1] for img in noisy_imgs),
+        )
+        clean_imgs = [_pad_frame_to_shape(img, target_h, target_w) for img in clean_imgs]
+        noisy_imgs = [_pad_frame_to_shape(img, target_h, target_w) for img in noisy_imgs]
+
+        top = random.randint(0, target_h - ps)
+        left = random.randint(0, target_w - ps)
 
         # Consistent augmentation across all frames
         flip_v = self._augment and random.random() < 0.5
@@ -626,20 +646,7 @@ class PairedVideoSequenceDataset(Dataset):
         rot_k  = random.randint(0, 3) if self._augment else 0
 
         noisy_frames, clean_frames, sigma_frames = [], [], []
-        for clean_p, noisy_p in zip(clean_paths, noisy_paths):
-            clean_img = _load_image(clean_p)
-            noisy_img = _load_image(noisy_p)
-
-            for arr_list in ([clean_img], [noisy_img]):
-                arr = arr_list[0]
-                if h < ps or w < ps:
-                    pad_h = max(0, ps - h)
-                    pad_w = max(0, ps - w)
-                    arr = np.pad(arr, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
-                arr_list[0] = arr[top : top + ps, left : left + ps, :]
-
-            clean_patch, noisy_patch = clean_img, noisy_img
-            # Augment: must apply identically to both
+        for clean_img, noisy_img in zip(clean_imgs, noisy_imgs):
             clean_patch = clean_img[top : top + ps, left : left + ps, :]
             noisy_patch = noisy_img[top : top + ps, left : left + ps, :]
             if flip_v:
