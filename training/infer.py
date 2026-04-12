@@ -227,7 +227,26 @@ def _load_alpha(path: Path) -> Optional[np.ndarray]:
         return np.clip(alpha, 0.0, 1.0)
 
 
-def _save_image(path: Path, img: np.ndarray, alpha: Optional[np.ndarray] = None) -> None:
+def _read_exr_header(path: Path) -> dict:
+    """Read EXR header attributes to preserve on output.
+
+    Returns a dict containing dataWindow, displayWindow, pixelAspectRatio,
+    screenWindowCenter, screenWindowWidth and any other attributes present.
+    Returns an empty dict for non-EXR paths.
+    """
+    if path.suffix.lower() != ".exr":
+        return {}
+    import OpenEXR
+    with OpenEXR.File(str(path)) as exr:
+        return dict(exr.parts[0].header)
+
+
+def _save_image(
+    path: Path,
+    img: np.ndarray,
+    alpha: Optional[np.ndarray] = None,
+    exr_header: Optional[dict] = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     img = img.astype(np.float32)
 
@@ -241,14 +260,26 @@ def _save_image(path: Path, img: np.ndarray, alpha: Optional[np.ndarray] = None)
             out = np.repeat(out, 3, axis=2)
         elif out.shape[-1] > 3:
             out = out[..., :3]
+
+        # Build header — start from input header to preserve dataWindow,
+        # displayWindow, pixelAspectRatio, etc., then enforce scanlineimage type.
+        header: dict = {}
+        if exr_header:
+            _PRESERVE = {
+                "dataWindow", "displayWindow",
+                "pixelAspectRatio", "screenWindowCenter", "screenWindowWidth",
+            }
+            header.update({k: v for k, v in exr_header.items() if k in _PRESERVE})
+        header["type"] = OpenEXR.scanlineimage
+
         if alpha is not None:
             alpha = np.clip(alpha.astype(np.float32), 0.0, 1.0)
             if alpha.shape != out.shape[:2]:
                 raise ValueError("Alpha channel shape does not match RGB output shape.")
             rgba = np.concatenate([out, alpha[..., None]], axis=-1)
-            OpenEXR.File({"type": OpenEXR.scanlineimage}, {"RGBA": rgba}).write(str(path))
+            OpenEXR.File(header, {"RGBA": rgba}).write(str(path))
         else:
-            OpenEXR.File({"type": OpenEXR.scanlineimage}, {"RGB": out}).write(str(path))
+            OpenEXR.File(header, {"RGB": out}).write(str(path))
         return
 
     import imageio.v3 as iio
@@ -359,7 +390,8 @@ def main() -> None:
                 print(f"{noisy_path.name}: denoised")
 
             if args.output:
-                _save_image(Path(args.output) / noisy_path.name, output_img)
+                exr_header = _read_exr_header(noisy_path)
+                _save_image(Path(args.output) / noisy_path.name, output_img, exr_header=exr_header)
     else:
         single_file = len(pairs) == 1 and Path(args.input).is_file() if args.input else False
         for noisy_path, clean_path in pairs:
@@ -381,7 +413,8 @@ def main() -> None:
 
             if args.output:
                 out = Path(args.output) if single_file else Path(args.output) / noisy_path.name
-                _save_image(out, output_img)
+                exr_header = _read_exr_header(noisy_path)
+                _save_image(out, output_img, exr_header=exr_header)
 
     if psnr_values:
         print(f"\nMean PSNR: {np.mean(psnr_values):.2f} dB")
