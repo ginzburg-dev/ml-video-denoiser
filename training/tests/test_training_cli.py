@@ -14,6 +14,7 @@ from training import (
     _config_summary_lines,
     _dataset_summary_lines,
     _make_noise_generator,
+    _temporal_model_config,
     _temporal_sampling_config,
     _validation_patch_repeats,
     _validation_temporal_config,
@@ -146,6 +147,16 @@ class TestTrainingCli:
         ])
         with pytest.raises(SystemExit):
             _temporal_sampling_config(args, parser)
+
+    def test_even_num_frames_rejected_for_temporal_model(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "--data", "images",
+            "--model", "temporal",
+            "--num-frames", "4",
+        ])
+        with pytest.raises(SystemExit):
+            _temporal_model_config(args, parser)
 
     def test_val_windows_per_sequence_requires_temporal_model(self) -> None:
         parser = build_parser()

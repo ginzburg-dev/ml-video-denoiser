@@ -14,6 +14,9 @@ from models import (
     NAFNetTemporal,
     _pad_to_multiple,
     _unpad,
+    build_model_from_metadata,
+    get_model_metadata,
+    validate_temporal_num_frames,
 )
 
 
@@ -198,6 +201,20 @@ class TestNAFNetTemporalWarp:
         with torch.no_grad():
             out = model(clip)
         assert out.shape == (1, 3, 32, 32)
+
+
+class TestModelMetadata:
+    def test_temporal_metadata_roundtrip_preserves_window_and_warp(self) -> None:
+        model = NAFNetTemporal(NAFNetConfig.tiny(), num_frames=5, use_warp=True)
+        rebuilt = build_model_from_metadata(get_model_metadata(model))
+        assert isinstance(rebuilt, NAFNetTemporal)
+        assert rebuilt._num_frames == 5
+        assert rebuilt._use_warp is True
+        assert rebuilt._config.base_channels == model._config.base_channels
+
+    def test_validate_temporal_num_frames_rejects_even(self) -> None:
+        with pytest.raises(ValueError, match="odd integer >= 3"):
+            validate_temporal_num_frames(4)
 
 
 # ---------------------------------------------------------------------------

@@ -352,6 +352,33 @@ class NAFNetConfig:
         self.ffn_expand = ffn_expand
         self.drop_out_rate = drop_out_rate
 
+    def to_dict(self) -> dict:
+        """Serialise the config for checkpoints/manifests."""
+        return {
+            "in_channels": self.in_channels,
+            "base_channels": self.base_channels,
+            "enc_blocks": list(self.enc_blocks),
+            "middle_blocks": self.middle_blocks,
+            "dec_blocks": list(self.dec_blocks),
+            "dw_expand": self.dw_expand,
+            "ffn_expand": self.ffn_expand,
+            "drop_out_rate": self.drop_out_rate,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "NAFNetConfig":
+        """Rebuild a config from ``to_dict()`` output."""
+        return cls(
+            in_channels=data["in_channels"],
+            base_channels=data["base_channels"],
+            enc_blocks=tuple(data["enc_blocks"]),
+            middle_blocks=data["middle_blocks"],
+            dec_blocks=tuple(data["dec_blocks"]),
+            dw_expand=data["dw_expand"],
+            ffn_expand=data["ffn_expand"],
+            drop_out_rate=data["drop_out_rate"],
+        )
+
     @classmethod
     def tiny(cls) -> "NAFNetConfig":
         """Very fast, good for quick experiments."""
@@ -413,6 +440,7 @@ class NAFNet(nn.Module):
     def __init__(self, config: Optional["NAFNetConfig"] = None) -> None:
         super().__init__()
         cfg = config or NAFNetConfig.standard()
+        self._config = NAFNetConfig.from_dict(cfg.to_dict())
         self._pad_multiple = cfg.pad_multiple
 
         kw = {"dw_expand": cfg.dw_expand, "ffn_expand": cfg.ffn_expand, "drop_out_rate": cfg.drop_out_rate}
@@ -551,7 +579,9 @@ class NAFNetTemporal(nn.Module):
         use_warp: bool = False,
     ) -> None:
         super().__init__()
+        validate_temporal_num_frames(num_frames)
         cfg = config or NAFNetConfig.standard()
+        self._config = NAFNetConfig.from_dict(cfg.to_dict())
         self._pad_multiple = cfg.pad_multiple
         self._num_frames = num_frames
         self._ref_idx = num_frames // 2
@@ -684,3 +714,41 @@ class NAFNetTemporal(nn.Module):
 
         residual = _unpad(self.ending(x), padding)
         return beauty + residual
+
+
+def validate_temporal_num_frames(num_frames: int) -> None:
+    """Require an odd temporal window with a defined centre frame."""
+    if num_frames < 3 or num_frames % 2 == 0:
+        raise ValueError("Temporal window size must be an odd integer >= 3.")
+
+
+def get_model_metadata(model: nn.Module) -> dict:
+    """Extract enough metadata to rebuild *model* from a checkpoint."""
+    if isinstance(model, NAFNetTemporal):
+        return {
+            "model_type": "temporal",
+            "naf_config": model._config.to_dict(),
+            "num_frames": model._num_frames,
+            "use_warp": model._use_warp,
+        }
+    if isinstance(model, NAFNet):
+        return {
+            "model_type": "spatial",
+            "naf_config": model._config.to_dict(),
+        }
+    raise TypeError(f"Unsupported model type for checkpoint metadata: {type(model)!r}")
+
+
+def build_model_from_metadata(metadata: dict) -> nn.Module:
+    """Rebuild a NAFNet model from checkpoint metadata."""
+    cfg = NAFNetConfig.from_dict(metadata["naf_config"])
+    model_type = metadata["model_type"]
+    if model_type == "spatial":
+        return NAFNet(cfg)
+    if model_type == "temporal":
+        return NAFNetTemporal(
+            cfg,
+            num_frames=metadata["num_frames"],
+            use_warp=metadata.get("use_warp", False),
+        )
+    raise ValueError(f"Unsupported model_type in checkpoint metadata: {model_type!r}")

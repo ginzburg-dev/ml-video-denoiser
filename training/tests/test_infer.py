@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from infer import _clip_indices, _load_image, _save_image, compute_ssim, denoise_temporal_frame
@@ -57,6 +58,10 @@ class TestTemporalInfer:
     def test_clip_indices_replicate_edges(self) -> None:
         assert _clip_indices(length=4, centre_idx=0, num_frames=5) == [0, 0, 0, 1, 2]
         assert _clip_indices(length=4, centre_idx=3, num_frames=5) == [1, 2, 3, 3, 3]
+
+    def test_clip_indices_reject_even_temporal_window(self) -> None:
+        with pytest.raises(ValueError, match="odd integer >= 3"):
+            _clip_indices(length=4, centre_idx=1, num_frames=4)
 
     def test_denoise_temporal_frame_builds_5d_clip_and_crops_back(self) -> None:
         model = _DummyTemporalModel(num_frames=5)

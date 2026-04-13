@@ -83,7 +83,15 @@ from dataset import (
     VideoSequenceDataset,
 )
 from losses import NoiseWeightedL1Loss
-from models import NAFNet, NAFNetConfig, NAFNetTemporal, freeze_spatial, load_spatial_weights
+from models import (
+    NAFNet,
+    NAFNetConfig,
+    NAFNetTemporal,
+    freeze_spatial,
+    get_model_metadata,
+    load_spatial_weights,
+    validate_temporal_num_frames,
+)
 from noise_generators import (
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
@@ -157,6 +165,7 @@ def _save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "best_psnr": best_psnr,
+        "model_metadata": get_model_metadata(model),
     }
 
     tmp_name = None
@@ -186,7 +195,7 @@ def _load_checkpoint(
     model.load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-    return ckpt["epoch"], ckpt["best_psnr"]
+    return ckpt["epoch"] + 1, ckpt["best_psnr"]
 
 
 def _module_device(module: nn.Module) -> torch.device:
@@ -600,6 +609,19 @@ def _validation_temporal_config(
     return args.val_windows_per_sequence, args.val_crop_mode, args.val_grid_size
 
 
+def _temporal_model_config(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    """Validate the temporal window size when the temporal model is selected."""
+    if args.model == "temporal":
+        try:
+            validate_temporal_num_frames(args.num_frames)
+        except ValueError as exc:
+            parser.error(str(exc))
+    return args.num_frames
+
+
 def _validation_patch_repeats(crop_mode: str, grid_size: int) -> int:
     """Return how many deterministic crops each validation item should use."""
     if crop_mode == "grid":
@@ -729,6 +751,7 @@ def main() -> None:
     val_windows_per_sequence, val_crop_mode, val_grid_size = _validation_temporal_config(
         args, parser, val_mode
     )
+    _temporal_model_config(args, parser)
     val_patch_repeats = _validation_patch_repeats(val_crop_mode, val_grid_size)
 
     noise_gen = _make_noise_generator(args, parser)

@@ -30,7 +30,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models import NAFNet, NAFNetConfig, NAFNetTemporal
+from models import (
+    NAFNet,
+    NAFNetConfig,
+    NAFNetTemporal,
+    build_model_from_metadata,
+    validate_temporal_num_frames,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +191,8 @@ def main() -> None:
                         help="NAFNet size preset.  --naf-base overrides base_channels when both given.")
     parser.add_argument("--num-frames", type=int, default=3, metavar="T",
                         help="Temporal window size for --model temporal (default: 3).")
+    parser.add_argument("--use-warp", action="store_true",
+                        help="Enable learned warp when rebuilding a legacy temporal checkpoint.")
     parser.add_argument("--output", required=True, metavar="DIR")
     parser.add_argument("--dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--verify", action="store_true",
@@ -197,15 +205,23 @@ def main() -> None:
         "standard": NAFNetConfig.standard,
         "wide": NAFNetConfig.wide,
     }
-    naf_config = _preset_map[args.naf_preset]() if args.naf_preset else NAFNetConfig(base_channels=args.naf_base)
-    if args.naf_preset and args.naf_base != 32:
-        naf_config.base_channels = args.naf_base
-    if args.model == "temporal":
-        model = NAFNetTemporal(naf_config, num_frames=args.num_frames)
-    else:
-        model = NAFNet(naf_config)
-
     ckpt = torch.load(args.checkpoint, map_location="cpu")
+    metadata = ckpt.get("model_metadata") if isinstance(ckpt, dict) else None
+    if metadata is not None:
+        model = build_model_from_metadata(metadata)
+    else:
+        naf_config = (
+            _preset_map[args.naf_preset]()
+            if args.naf_preset
+            else NAFNetConfig(base_channels=args.naf_base)
+        )
+        if args.naf_preset and args.naf_base != 32:
+            naf_config.base_channels = args.naf_base
+        if args.model == "temporal":
+            validate_temporal_num_frames(args.num_frames)
+            model = NAFNetTemporal(naf_config, num_frames=args.num_frames, use_warp=args.use_warp)
+        else:
+            model = NAFNet(naf_config)
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.eval()

@@ -31,7 +31,13 @@ from torch import Tensor
 
 from dataset import _load_image as _load_dataset_image
 from dataset import _pad_frame_to_shape
-from models import NAFNet, NAFNetConfig, NAFNetTemporal
+from models import (
+    NAFNet,
+    NAFNetConfig,
+    NAFNetTemporal,
+    build_model_from_metadata,
+    validate_temporal_num_frames,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +170,7 @@ def _make_ramp(h: int, w: int, overlap: int, device: torch.device) -> Tensor:
 
 def _clip_indices(length: int, centre_idx: int, num_frames: int) -> list[int]:
     """Return a centred temporal window using edge replication at boundaries."""
+    validate_temporal_num_frames(num_frames)
     radius = num_frames // 2
     return [min(max(centre_idx + offset, 0), length - 1) for offset in range(-radius, radius + 1)]
 
@@ -310,6 +317,8 @@ def main() -> None:
                              "--naf-base overrides base_channels when both are given.")
     parser.add_argument("--num-frames", type=int, default=3, metavar="T",
                         help="Temporal window size for --model temporal (default: 3).")
+    parser.add_argument("--use-warp", action="store_true",
+                        help="Enable learned warp when rebuilding a legacy temporal checkpoint.")
     parser.add_argument("--input", default=None, metavar="DIR",
                         help="Input directory of noisy images (no ground truth).")
     parser.add_argument("--noisy", default=None, metavar="DIR",
@@ -332,14 +341,6 @@ def main() -> None:
         "standard": NAFNetConfig.standard,
         "wide": NAFNetConfig.wide,
     }
-    naf_config = _preset_map[args.naf_preset]() if args.naf_preset else NAFNetConfig(base_channels=args.naf_base)
-    if args.naf_preset and args.naf_base != 32:
-        naf_config.base_channels = args.naf_base
-    if args.model == "temporal":
-        model = NAFNetTemporal(naf_config, num_frames=args.num_frames)
-    else:
-        model = NAFNet(naf_config)
-
     try:
         ckpt = torch.load(args.checkpoint, map_location=device)
     except (OSError, RuntimeError) as exc:
@@ -349,6 +350,28 @@ def main() -> None:
             "Try another checkpoint such as final.pth or an epoch_XXXX.pth file."
             f" Original error: {exc}"
         )
+    metadata = ckpt.get("model_metadata") if isinstance(ckpt, dict) else None
+    if metadata is not None:
+        try:
+            model = build_model_from_metadata(metadata)
+        except (KeyError, TypeError, ValueError) as exc:
+            parser.error(f"Checkpoint model metadata is invalid: {exc}")
+    else:
+        naf_config = (
+            _preset_map[args.naf_preset]()
+            if args.naf_preset
+            else NAFNetConfig(base_channels=args.naf_base)
+        )
+        if args.naf_preset and args.naf_base != 32:
+            naf_config.base_channels = args.naf_base
+        if args.model == "temporal":
+            try:
+                validate_temporal_num_frames(args.num_frames)
+            except ValueError as exc:
+                parser.error(str(exc))
+            model = NAFNetTemporal(naf_config, num_frames=args.num_frames, use_warp=args.use_warp)
+        else:
+            model = NAFNet(naf_config)
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.to(device).eval()

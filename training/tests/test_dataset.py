@@ -389,6 +389,21 @@ class TestPairedPatchDataset:
         )
         assert ds.num_pairs == 5
 
+    def test_match_by_name_rejects_partial_overlap(self, tmp_path: Path) -> None:
+        import imageio.v3 as iio
+
+        clean_dir = tmp_path / "clean"
+        noisy_dir = tmp_path / "noisy"
+        clean_dir.mkdir()
+        noisy_dir.mkdir()
+        for stem in ("a", "b", "c"):
+            iio.imwrite(str(clean_dir / f"{stem}.png"), np.zeros((32, 32, 3), dtype=np.uint8))
+        for stem in ("a", "c", "extra"):
+            iio.imwrite(str(noisy_dir / f"{stem}.png"), np.zeros((32, 32, 3), dtype=np.uint8))
+
+        with pytest.raises(ValueError, match="Frame mismatch"):
+            PairedPatchDataset(clean_dir, noisy_dir, patch_size=64, match_by_name=True)
+
     def test_match_by_position(self, tmp_path: Path) -> None:
         clean_dir, noisy_dir = _write_paired_images(tmp_path)
         ds = PairedPatchDataset(

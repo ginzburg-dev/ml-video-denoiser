@@ -654,18 +654,25 @@ def _match_pairs(
         raise ValueError(f"No noisy images found in: {noisy_dir}")
 
     if match_by_name:
-        noisy_by_stem = {p.stem: p for p in noisy_paths}
-        pairs = [
-            (c, noisy_by_stem[c.stem])
-            for c in clean_paths
-            if c.stem in noisy_by_stem
-        ]
-        if not pairs:
-            raise ValueError(
-                f"No filename matches between {clean_dir} and {noisy_dir}. "
-                "Set match_by_name=False to use sorted-position matching instead."
-            )
-        return sorted(pairs)
+        if frames_per_sequence is not None:
+            clean_root = Path(clean_dir)
+            noisy_root = Path(noisy_dir)
+            pairs: list[tuple[Path, Path]] = []
+            missing_noisy: list[str] = []
+            for clean_path in clean_paths:
+                rel_path = clean_path.relative_to(clean_root)
+                noisy_path = noisy_root / rel_path
+                if noisy_path.exists():
+                    pairs.append((clean_path, noisy_path))
+                else:
+                    missing_noisy.append(str(rel_path))
+            if missing_noisy:
+                raise ValueError(
+                    "Frame mismatch between clean and noisy sequences: "
+                    f"missing noisy frames: {', '.join(missing_noisy[:3])}"
+                )
+            return sorted(pairs)
+        return _match_named_images(clean_paths, noisy_paths)
     else:
         if len(clean_paths) != len(noisy_paths):
             raise ValueError(
