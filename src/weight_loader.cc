@@ -106,7 +106,7 @@ void WeightStore::parse_manifest(const std::string& path) {
         manifest_.architecture.in_channels = arch.value("in_channels", 3);
         manifest_.architecture.out_channels = arch.value("out_channels", 3);
         manifest_.architecture.num_levels = arch.value("num_levels", 4);
-        manifest_.architecture.num_frames = arch.value("num_frames", 5);
+        manifest_.architecture.num_frames = arch.value("num_frames", 3);
         manifest_.architecture.use_warp = arch.value("use_warp", false);
         if (arch.contains("enc_channels")) {
             for (const auto& ch : arch["enc_channels"]) {

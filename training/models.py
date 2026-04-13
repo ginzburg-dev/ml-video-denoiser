@@ -504,7 +504,7 @@ class NAFNetTemporal(nn.Module):
 
     Args:
         config:     NAFNetConfig controlling block counts and base channels.
-        num_frames: Temporal window size (default: 5; reference = centre frame).
+        num_frames: Temporal window size (default: 3; reference = centre frame).
         use_warp:   Enable per-level learned warp for real video with motion.
 
     Example::
@@ -523,7 +523,7 @@ class NAFNetTemporal(nn.Module):
         cls,
         path: "Path | str",
         config: Optional[NAFNetConfig] = None,
-        num_frames: int = 5,
+        num_frames: int = 3,
         use_warp: bool = False,
     ) -> "NAFNetTemporal":
         """Create a NAFNetTemporal pre-loaded with weights from a NAFNet checkpoint.
@@ -534,7 +534,7 @@ class NAFNetTemporal(nn.Module):
         Args:
             path:       Path to a NAFNet checkpoint produced by training.py.
             config:     NAFNetConfig to use (must match the training config).
-            num_frames: Temporal window (default: 5).
+            num_frames: Temporal window (default: 3).
             use_warp:   Enable warp heads (default: False).
 
         Returns:
@@ -547,7 +547,7 @@ class NAFNetTemporal(nn.Module):
     def __init__(
         self,
         config: Optional[NAFNetConfig] = None,
-        num_frames: int = 5,
+        num_frames: int = 3,
         use_warp: bool = False,
     ) -> None:
         super().__init__()
@@ -684,4 +684,3 @@ class NAFNetTemporal(nn.Module):
 
         residual = _unpad(self.ending(x), padding)
         return beauty + residual
-

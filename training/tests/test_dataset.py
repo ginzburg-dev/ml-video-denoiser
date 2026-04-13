@@ -16,8 +16,19 @@ from dataset import (
     PatchDataset,
     VideoSequenceDataset,
     _load_image,
+    _spread_indices,
 )
 from noise_generators import GaussianNoiseGenerator
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+class TestSpreadIndices:
+    def test_single_frame_count_returns_first_index(self) -> None:
+        assert _spread_indices(90, 1) == [0]
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +421,17 @@ class TestPairedPatchDataset:
         clean_dir, noisy_dir = _write_paired_images(tmp_path, n=3)
         ds = PairedPatchDataset(clean_dir, noisy_dir)
         assert ds.num_pairs == 3
+
+    def test_frames_per_sequence_one_selects_one_frame_per_sequence(self, tmp_path: Path) -> None:
+        clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=2, n_frames=10)
+        ds = PairedPatchDataset(
+            clean_root,
+            noisy_root,
+            patch_size=64,
+            patches_per_image=1,
+            frames_per_sequence=1,
+        )
+        assert ds.num_pairs == 2
 
 
 # ---------------------------------------------------------------------------

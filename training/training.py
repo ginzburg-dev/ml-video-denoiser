@@ -397,8 +397,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="NAFNet size preset: tiny (~0.4M), small (~7M), standard (~24M), "
                              "wide (~67M).  When set, uses the preset block counts and "
                              "base_channels; --naf-base overrides the base_channels only.")
-    parser.add_argument("--num-frames", type=int, default=5, metavar="T",
-                        help="Temporal window size for --model temporal (default: 5).")
+    parser.add_argument("--num-frames", type=int, default=3, metavar="T",
+                        help="Temporal window size for --model temporal (default: 3).")
     parser.add_argument("--use-warp", action="store_true",
                         help="Enable per-level learned warp in the temporal model.  "
                              "Recommended for real video with motion; leave disabled for render sequences.")

@@ -259,7 +259,7 @@ struct NAFUpsample {
 
 struct NAFNetTemporal::Impl {
     std::vector<int> enc_channels;
-    int num_frames = 5;
+    int num_frames = 3;
     int ref_idx = 2;
     int in_channels = 3;
     int pad_multiple = 1;

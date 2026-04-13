@@ -34,7 +34,7 @@ struct Manifest {
         int base_channels = 32;
         int in_channels = 3;
         int out_channels = 3;
-        int num_frames = 5;     // NAFNetTemporal only
+        int num_frames = 3;     // NAFNetTemporal only
         bool use_warp = false;  // NAFNetTemporal only
     } architecture;
 };

@@ -26,7 +26,7 @@ def _make_batch(b: int = 1, c: int = 3, h: int = 128, w: int = 128) -> Tensor:
     return torch.rand(b, c, h, w)
 
 
-def _make_clip(b: int = 1, t: int = 5, c: int = 3, h: int = 64, w: int = 64) -> Tensor:
+def _make_clip(b: int = 1, t: int = 3, c: int = 3, h: int = 64, w: int = 64) -> Tensor:
     return torch.rand(b, t, c, h, w)
 
 
@@ -165,16 +165,16 @@ class TestNAFNetTemporalForward:
         assert torch.isfinite(out).all()
 
     def test_wrong_frame_count_raises(self) -> None:
-        model = NAFNetTemporal(NAFNetConfig.tiny(), num_frames=5).eval()
-        clip = _make_clip(t=3, h=32, w=32)
+        model = NAFNetTemporal(NAFNetConfig.tiny(), num_frames=3).eval()
+        clip = _make_clip(t=5, h=32, w=32)
         with torch.no_grad(), pytest.raises(AssertionError):
             model(clip)
 
     def test_identity_init(self) -> None:
         """At epoch 0 the output should ≈ centre frame beauty (zero-init ending)."""
         model = NAFNetTemporal(NAFNetConfig.tiny()).eval()
-        clip = torch.rand(1, 5, 3, 32, 32)
-        ref = clip[:, 2, :3]   # centre frame beauty
+        clip = torch.rand(1, 3, 3, 32, 32)
+        ref = clip[:, 1, :3]   # centre frame beauty
         with torch.no_grad():
             out = model(clip)
         assert torch.allclose(out, ref, atol=1e-5)
@@ -185,7 +185,7 @@ class TestNAFNetTemporalConfigs:
     def test_preset_builds_and_runs(self, preset: str) -> None:
         cfg = getattr(NAFNetConfig, preset)()
         model = NAFNetTemporal(cfg).eval()
-        clip = torch.rand(1, 5, 3, 32, 32)
+        clip = torch.rand(1, 3, 3, 32, 32)
         with torch.no_grad():
             out = model(clip)
         assert out.shape == (1, 3, 32, 32)

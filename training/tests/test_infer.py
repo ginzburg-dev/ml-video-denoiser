@@ -44,7 +44,7 @@ class TestInferImageLoading:
 
 
 class _DummyTemporalModel(torch.nn.Module):
-    def __init__(self, num_frames: int = 5) -> None:
+    def __init__(self, num_frames: int = 3) -> None:
         super().__init__()
         self._num_frames = num_frames
 

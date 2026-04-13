@@ -117,6 +117,11 @@ class TestTrainingCli:
         args = parser.parse_args(["--data", "images"])
         assert _temporal_sampling_config(args, parser) == (False, None)
 
+    def test_temporal_model_defaults_to_3_frames(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--model", "temporal"])
+        assert args.num_frames == 3
+
     def test_windows_per_sequence_enables_random_temporal_sampling(self) -> None:
         parser = build_parser()
         args = parser.parse_args([

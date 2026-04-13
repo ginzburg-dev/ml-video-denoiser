@@ -189,7 +189,7 @@ Tests for `NAFNet` and `NAFNetTemporal` model architectures.
 | `TestNAFNetAuxChannels` | `in_channels=9` input → `(B,3,H,W)` output |
 | `TestNAFNetIdentityInit` | Output ≈ input[:,:3] at epoch 0 (zero-init ending) |
 | `TestNAFNetConfigs` | Tiny / small / standard / wide presets build and run; tiny < wide params |
-| `TestNAFNetTemporalForward` | 5-frame clip → single denoised frame, correct shape, identity at init |
+| `TestNAFNetTemporalForward` | 3-frame clip → single denoised frame, correct shape, identity at init |
 | `TestNAFNetTemporalConfigs` | Temporal model with tiny and small presets |
 | `TestNAFNetTemporalWarp` | `use_warp=True` — output shape correct |
 | `TestSpatialWeightTransfer` | `load_spatial_weights` transfers all matching keys; temporal keys untouched |
@@ -402,7 +402,7 @@ uv run python training.py \
 
 ### Temporal model training
 
-The `--model temporal` flag trains the 5-frame `NAFNetTemporal` model.
+The `--model temporal` flag trains the 3-frame `NAFNetTemporal` model by default.
 Training directories must be **sequence roots** whose immediate subdirectories
 are frame sequences (one folder per clip):
 
@@ -725,7 +725,7 @@ uv run python infer.py \
     --tile 512 \
     --output photo_4k_denoised.png
 
-# Temporal model — denoises every frame using a 5-frame window
+# Temporal model — denoises every frame using a 3-frame window
 uv run python infer.py \
     --checkpoint checkpoints/temporal/best.pth \
     --model temporal \
@@ -770,7 +770,7 @@ CLI options:
 --input  PATH   PNG/JPG/EXR, directory, or MP4/MOV
 --output PATH   output path (default: <input>_denoised.<ext>)
 --mode   MODE   spatial | temporal (default: spatial)
---frames N      temporal window size (default: 5)
+--frames N      temporal window size (default: 3)
 --device N      CUDA device index (default: 0)
 --prefetch      pre-upload all weights before first inference
 ```

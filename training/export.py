@@ -183,8 +183,8 @@ def main() -> None:
                         help="Base channel count for NAFNet models (default: 32).")
     parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
                         help="NAFNet size preset.  --naf-base overrides base_channels when both given.")
-    parser.add_argument("--num-frames", type=int, default=5, metavar="T",
-                        help="Temporal window size for --model temporal (default: 5).")
+    parser.add_argument("--num-frames", type=int, default=3, metavar="T",
+                        help="Temporal window size for --model temporal (default: 3).")
     parser.add_argument("--output", required=True, metavar="DIR")
     parser.add_argument("--dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--verify", action="store_true",

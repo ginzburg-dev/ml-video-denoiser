@@ -71,9 +71,14 @@ def _spread_indices(n: int, count: int) -> list[int]:
         _spread_indices(90, 3) → [0, 44, 89]
         _spread_indices(90, 5) → [0, 22, 44, 67, 89]
         _spread_indices(3,  5) → [0, 1, 2]
+        _spread_indices(90, 1) → [0]
     """
+    if count <= 0:
+        raise ValueError("count must be a positive integer")
     if count >= n:
         return list(range(n))
+    if count == 1:
+        return [0]
     return [int(round(i * (n - 1) / (count - 1))) for i in range(count)]
 
 
@@ -404,7 +409,7 @@ class VideoSequenceDataset(Dataset):
         noise_generator: Noise generator to apply.  For consistent temporal
             noise, wrap the desired generator in ConsistentClipNoiseGenerator.
             If None, defaults to GaussianNoiseGenerator.
-        num_frames: Temporal clip length (default: 5).
+        num_frames: Temporal clip length (default: 3).
         patch_size: Spatial patch size (default: 64 — smaller than spatial
             because memory cost is num_frames ×).
         patches_per_clip: Virtual patches per clip per epoch (default: 16).
@@ -423,7 +428,7 @@ class VideoSequenceDataset(Dataset):
         self,
         sequence_dirs: Sequence[str | Path],
         noise_generator: Optional[NoiseGenerator] = None,
-        num_frames: int = 5,
+        num_frames: int = 3,
         patch_size: int = 64,
         patches_per_clip: int = 16,
         random_windows: bool = False,
@@ -856,7 +861,7 @@ class PairedVideoSequenceDataset(Dataset):
         clean_sequence_dirs: One or more clean root directories.
         noisy_sequence_dirs: Matching noisy root directories.  Must have the
             same number of entries as *clean_sequence_dirs*.
-        num_frames: Temporal window length (default: 5).
+        num_frames: Temporal window length (default: 3).
         patch_size: Spatial patch size (default: 64).
         patches_per_clip: Virtual patches per clip per epoch (default: 16).
         random_windows: If True, sample random temporal windows from each
@@ -874,7 +879,7 @@ class PairedVideoSequenceDataset(Dataset):
         self,
         clean_sequence_dirs: Sequence[str | Path],
         noisy_sequence_dirs: Sequence[str | Path],
-        num_frames: int = 5,
+        num_frames: int = 3,
         patch_size: int = 64,
         patches_per_clip: int = 16,
         random_windows: bool = False,

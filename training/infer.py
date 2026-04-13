@@ -308,8 +308,8 @@ def main() -> None:
     parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
                         help="NAFNet size preset (tiny/small/standard/wide).  "
                              "--naf-base overrides base_channels when both are given.")
-    parser.add_argument("--num-frames", type=int, default=5, metavar="T",
-                        help="Temporal window size for --model temporal (default: 5).")
+    parser.add_argument("--num-frames", type=int, default=3, metavar="T",
+                        help="Temporal window size for --model temporal (default: 3).")
     parser.add_argument("--input", default=None, metavar="DIR",
                         help="Input directory of noisy images (no ground truth).")
     parser.add_argument("--noisy", default=None, metavar="DIR",

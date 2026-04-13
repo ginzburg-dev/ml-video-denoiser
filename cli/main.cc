@@ -32,7 +32,7 @@ struct Args {
     std::string output_path;
     std::string mode = "spatial";   // spatial | temporal
     int  device      = 0;
-    int  num_frames  = 5;           // temporal window
+    int  num_frames  = 3;           // temporal window
     bool prefetch    = false;       // pre-upload all weights
 };
 
@@ -51,7 +51,7 @@ static void print_usage(const char* prog) {
         "Options:\n"
         "  --output PATH   output path (default: <input>_denoised.<ext>)\n"
         "  --mode   MODE   spatial | temporal  (default: spatial)\n"
-        "  --frames N      temporal window size (default: 5)\n"
+        "  --frames N      temporal window size (default: 3)\n"
         "  --device N      CUDA device index   (default: 0)\n"
         "  --prefetch      upload all weights before first inference\n"
         "  --help\n";
