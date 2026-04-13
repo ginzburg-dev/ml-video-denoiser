@@ -356,7 +356,23 @@ def main() -> None:
             model = build_model_from_metadata(metadata)
         except (KeyError, TypeError, ValueError) as exc:
             parser.error(f"Checkpoint model metadata is invalid: {exc}")
+        print(
+            "Loaded model metadata from checkpoint: "
+            f"type={metadata['model_type']}, "
+            f"base_channels={metadata['naf_config']['base_channels']}"
+            + (
+                f", num_frames={metadata['num_frames']}, use_warp={metadata.get('use_warp', False)}"
+                if metadata["model_type"] == "temporal"
+                else ""
+            )
+        )
     else:
+        print(
+            "Warning: checkpoint has no model_metadata; rebuilding from CLI flags. "
+            "If this is a legacy temporal checkpoint, pass the original "
+            "--model/--num-frames/--use-warp values.",
+            file=sys.stderr,
+        )
         naf_config = (
             _preset_map[args.naf_preset]()
             if args.naf_preset
@@ -372,6 +388,15 @@ def main() -> None:
             model = NAFNetTemporal(naf_config, num_frames=args.num_frames, use_warp=args.use_warp)
         else:
             model = NAFNet(naf_config)
+        print(
+            "Reconstructed model from CLI flags: "
+            f"type={args.model}, base_channels={naf_config.base_channels}"
+            + (
+                f", num_frames={args.num_frames}, use_warp={args.use_warp}"
+                if args.model == "temporal"
+                else ""
+            )
+        )
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.to(device).eval()
