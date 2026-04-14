@@ -57,6 +57,16 @@ class TestTrainingCli:
         args = parser.parse_args(["--data", "images", "--loss", "log-l1"])
         assert args.loss == "log-l1"
 
+    def test_color_space_flag_parses_explicitly(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--color-space", "log"])
+        assert args.color_space == "log"
+
+    def test_scheduler_flag_parses_explicitly(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--scheduler", "plateau"])
+        assert args.scheduler == "plateau"
+
     def test_noise_abbreviation_is_rejected(self) -> None:
         parser = build_parser()
         with pytest.raises(SystemExit):
@@ -240,8 +250,12 @@ class TestTrainingCli:
             val_crop_mode="random",
             val_grid_size=2,
             loss_name="log-l1",
+            color_space="log",
+            scheduler_name="plateau",
         )
         assert "Loss: log-l1" in lines
+        assert "Color space: log" in lines
+        assert "Scheduler: plateau" in lines
 
     def test_dataset_summary_uses_image_count_when_available(self) -> None:
         lines = _dataset_summary_lines("Train", _DummyDataset(128, num_images=8))

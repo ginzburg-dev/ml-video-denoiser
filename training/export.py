@@ -49,6 +49,7 @@ def export_model(
     model: nn.Module,
     output_dir: Path,
     dtype: Literal["float16", "float32"] = "float16",
+    training_config: dict | None = None,
 ) -> Path:
     """Export model weights to binary files and a manifest JSON.
 
@@ -102,6 +103,8 @@ def export_model(
         "architecture": arch_info,
         "layers": layers,
     }
+    if training_config:
+        manifest["training_config"] = training_config
 
     manifest_path = output_dir / "manifest.json"
     with open(manifest_path, "w") as f:
@@ -208,6 +211,7 @@ def main() -> None:
     }
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     metadata = ckpt.get("model_metadata") if isinstance(ckpt, dict) else None
+    training_config = ckpt.get("training_config") if isinstance(ckpt, dict) else None
     if metadata is not None:
         model = build_model_from_metadata(metadata)
         print(
@@ -252,7 +256,12 @@ def main() -> None:
     model.load_state_dict(state)
     model.eval()
 
-    manifest_path = export_model(model, Path(args.output), dtype=args.dtype)
+    manifest_path = export_model(
+        model,
+        Path(args.output),
+        dtype=args.dtype,
+        training_config=training_config,
+    )
 
     if args.verify:
         verify_export(model, manifest_path)

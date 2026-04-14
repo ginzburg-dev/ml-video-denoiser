@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from infer import _clip_indices, _load_image, _save_image, compute_ssim, denoise_temporal_frame
+from infer import _clip_indices, _load_image, _save_image, compute_ssim, denoise_image, denoise_temporal_frame
 
 
 class TestInferImageLoading:
@@ -54,6 +54,11 @@ class _DummyTemporalModel(torch.nn.Module):
         return clip[:, self._num_frames // 2]
 
 
+class _DummySpatialModel(torch.nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+
 class TestTemporalInfer:
     def test_clip_indices_replicate_edges(self) -> None:
         assert _clip_indices(length=4, centre_idx=0, num_frames=5) == [0, 0, 0, 1, 2]
@@ -77,6 +82,41 @@ class TestTemporalInfer:
 
         assert output.shape == sequence[2].shape
         assert np.allclose(output, sequence[2])
+
+    def test_denoise_temporal_frame_round_trips_log_color_space(self) -> None:
+        model = _DummyTemporalModel(num_frames=3)
+        sequence = [
+            np.full((4, 4, 3), 0.05, dtype=np.float32),
+            np.full((4, 4, 3), 0.2, dtype=np.float32),
+            np.full((4, 4, 3), 0.4, dtype=np.float32),
+        ]
+
+        output = denoise_temporal_frame(
+            model,
+            sequence,
+            frame_idx=1,
+            device=torch.device("cpu"),
+            use_amp=False,
+            color_space="log",
+        )
+
+        assert np.allclose(output, sequence[1], rtol=1e-5, atol=1e-6)
+
+
+class TestSpatialInfer:
+    def test_denoise_image_round_trips_log_color_space(self) -> None:
+        model = _DummySpatialModel()
+        noisy = np.full((6, 5, 3), 0.2, dtype=np.float32)
+
+        output = denoise_image(
+            model,
+            noisy,
+            device=torch.device("cpu"),
+            use_amp=False,
+            color_space="log",
+        )
+
+        assert np.allclose(output, noisy, rtol=1e-5, atol=1e-6)
 
 
 class TestMetrics:

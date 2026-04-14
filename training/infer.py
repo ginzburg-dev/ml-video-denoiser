@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import math
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -90,12 +91,45 @@ def compute_ssim(output: np.ndarray, clean: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _apply_color_space_tensor(tensor: Tensor, color_space: str) -> Tensor:
+    if color_space == "linear":
+        return tensor
+    if color_space != "log":
+        raise ValueError(f"Unsupported color_space: {color_space!r}")
+
+    transformed = tensor.clone()
+    if transformed.ndim == 4:
+        transformed[:, :3] = torch.log1p(transformed[:, :3].clamp_min(0.0))
+        return transformed
+    if transformed.ndim == 5:
+        transformed[:, :, :3] = torch.log1p(transformed[:, :, :3].clamp_min(0.0))
+        return transformed
+    raise ValueError(f"Unsupported tensor rank for color transform: {transformed.ndim}")
+
+
+def _inverse_color_space_tensor(tensor: Tensor, color_space: str) -> Tensor:
+    if color_space == "linear":
+        return tensor
+    if color_space != "log":
+        raise ValueError(f"Unsupported color_space: {color_space!r}")
+
+    restored = tensor.clone()
+    if restored.ndim == 4:
+        restored[:, :3] = torch.expm1(restored[:, :3]).clamp_min(0.0)
+        return restored
+    if restored.ndim == 5:
+        restored[:, :, :3] = torch.expm1(restored[:, :, :3]).clamp_min(0.0)
+        return restored
+    raise ValueError(f"Unsupported tensor rank for inverse color transform: {restored.ndim}")
+
+
 def denoise_image(
     model: torch.nn.Module,
     noisy: np.ndarray,
     device: torch.device,
     tile_size: int = 0,
     use_amp: bool = True,
+    color_space: str = "linear",
 ) -> np.ndarray:
     """Run the model on a single HWC float32 image.
 
@@ -111,6 +145,7 @@ def denoise_image(
     """
     h, w, c = noisy.shape
     x = torch.from_numpy(noisy.transpose(2, 0, 1)).unsqueeze(0).to(device)  # (1, C, H, W)
+    x = _apply_color_space_tensor(x, color_space)
 
     model.eval()
     with torch.no_grad():
@@ -119,6 +154,7 @@ def denoise_image(
         else:
             with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
                 output = model(x)
+    output = _inverse_color_space_tensor(output, color_space)
 
     return output.squeeze(0).permute(1, 2, 0).cpu().float().numpy()
 
@@ -181,6 +217,7 @@ def denoise_temporal_frame(
     frame_idx: int,
     device: torch.device,
     use_amp: bool = True,
+    color_space: str = "linear",
 ) -> np.ndarray:
     """Run a temporal model on the window centred at ``frame_idx``."""
     num_frames = model._num_frames
@@ -192,11 +229,13 @@ def denoise_temporal_frame(
     padded_frames = [_pad_frame_to_shape(frame, target_h, target_w) for frame in frames]
     clip = np.stack([frame.transpose(2, 0, 1) for frame in padded_frames], axis=0)  # (T, C, H, W)
     x = torch.from_numpy(clip).unsqueeze(0).to(device)  # (1, T, C, H, W)
+    x = _apply_color_space_tensor(x, color_space)
 
     model.eval()
     with torch.no_grad():
         with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
             output = model(x)
+    output = _inverse_color_space_tensor(output, color_space)
 
     ref_h, ref_w = sequence[frame_idx].shape[:2]
     return output.squeeze(0).permute(1, 2, 0).cpu().float().numpy()[:ref_h, :ref_w]
@@ -330,6 +369,8 @@ def main() -> None:
     parser.add_argument("--sigma", type=float, default=0.0,
                         help="Add synthetic AWGN of this sigma (normalised) to input.")
     parser.add_argument("--tile", type=int, default=0, metavar="SIZE")
+    parser.add_argument("--color-space", choices=["linear", "log"], default=None,
+                        help="Override checkpoint color space for legacy models.")
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
@@ -351,6 +392,8 @@ def main() -> None:
             f" Original error: {exc}"
         )
     metadata = ckpt.get("model_metadata") if isinstance(ckpt, dict) else None
+    training_config = ckpt.get("training_config", {}) if isinstance(ckpt, dict) else {}
+    color_space = args.color_space or training_config.get("color_space", "linear")
     if metadata is not None:
         try:
             model = build_model_from_metadata(metadata)
@@ -365,6 +408,7 @@ def main() -> None:
                 if metadata["model_type"] == "temporal"
                 else ""
             )
+            + f", color_space={color_space}"
         )
     else:
         print(
@@ -396,6 +440,7 @@ def main() -> None:
                 if args.model == "temporal"
                 else ""
             )
+            + f", color_space={color_space}"
         )
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
@@ -440,7 +485,14 @@ def main() -> None:
             ]
 
         for frame_idx, (noisy_path, clean_path) in enumerate(pairs):
-            output_img = denoise_temporal_frame(model, noisy_sequence, frame_idx, device, use_amp)
+            output_img = denoise_temporal_frame(
+                model,
+                noisy_sequence,
+                frame_idx,
+                device,
+                use_amp,
+                color_space=color_space,
+            )
 
             if clean_path is not None and clean_path.exists():
                 clean_img = _load_image(clean_path)
@@ -462,7 +514,14 @@ def main() -> None:
             if args.sigma > 0:
                 noisy_img = (noisy_img + np.random.randn(*noisy_img.shape) * args.sigma).clip(0, 1)
 
-            output_img = denoise_image(model, noisy_img, device, args.tile, use_amp)
+            output_img = denoise_image(
+                model,
+                noisy_img,
+                device,
+                args.tile,
+                use_amp,
+                color_space=color_space,
+            )
 
             if clean_path is not None and clean_path.exists():
                 clean_img = _load_image(clean_path)

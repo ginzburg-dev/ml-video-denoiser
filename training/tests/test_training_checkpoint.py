@@ -21,13 +21,23 @@ class TestTrainingCheckpoint:
         model, optimizer, scheduler = _make_temporal_stack()
         ckpt_path = tmp_path / "epoch_0001.pth"
 
-        _save_checkpoint(ckpt_path, model, optimizer, scheduler, epoch=0, best_psnr=12.5)
+        _save_checkpoint(
+            ckpt_path,
+            model,
+            optimizer,
+            scheduler,
+            epoch=0,
+            best_psnr=12.5,
+            training_config={"color_space": "log", "scheduler_name": "plateau"},
+        )
 
         payload = torch.load(ckpt_path, map_location="cpu")
         assert payload["model_metadata"]["model_type"] == "temporal"
         assert payload["model_metadata"]["num_frames"] == 5
         assert payload["model_metadata"]["use_warp"] is True
         assert payload["model_metadata"]["naf_config"]["base_channels"] == 16
+        assert payload["training_config"]["color_space"] == "log"
+        assert payload["training_config"]["scheduler_name"] == "plateau"
 
     def test_load_checkpoint_resumes_from_next_epoch(self, tmp_path: Path) -> None:
         model, optimizer, scheduler = _make_temporal_stack()

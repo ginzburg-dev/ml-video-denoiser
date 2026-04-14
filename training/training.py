@@ -71,7 +71,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
@@ -154,9 +154,10 @@ def _save_checkpoint(
     path: Path,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: LambdaLR,
+    scheduler,
     epoch: int,
     best_psnr: float,
+    training_config: Optional[dict] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -167,6 +168,8 @@ def _save_checkpoint(
         "best_psnr": best_psnr,
         "model_metadata": get_model_metadata(model),
     }
+    if training_config is not None:
+        payload["training_config"] = training_config
 
     tmp_name = None
     try:
@@ -188,13 +191,15 @@ def _load_checkpoint(
     path: Path,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    scheduler: LambdaLR,
+    scheduler,
     device: torch.device,
 ) -> tuple[int, float]:
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    scheduler_state = ckpt.get("scheduler_state_dict")
+    if scheduler_state is not None:
+        scheduler.load_state_dict(scheduler_state)
     return ckpt["epoch"] + 1, ckpt["best_psnr"]
 
 
@@ -217,6 +222,82 @@ def _make_loss(name: str) -> nn.Module:
     raise ValueError(f"Unsupported loss: {name!r}")
 
 
+class _NoOpScheduler:
+    """Scheduler shim used when LR scheduling is disabled."""
+
+    def __init__(self, optimizer: torch.optim.Optimizer) -> None:
+        self._optimizer = optimizer
+
+    def step(self, metric: Optional[float] = None) -> None:
+        del metric
+
+    def state_dict(self) -> dict:
+        return {}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        del state_dict
+
+    def get_last_lr(self) -> list[float]:
+        return [group["lr"] for group in self._optimizer.param_groups]
+
+
+def _make_scheduler(
+    name: str,
+    optimizer: torch.optim.Optimizer,
+    *,
+    warmup_epochs: int,
+    total_epochs: int,
+):
+    """Construct the requested LR scheduler."""
+    if name == "cosine":
+        return warmup_cosine_schedule(optimizer, warmup_epochs, total_epochs)
+    if name == "plateau":
+        return ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            min_lr=1e-6,
+        )
+    if name == "none":
+        return _NoOpScheduler(optimizer)
+    raise ValueError(f"Unsupported scheduler: {name!r}")
+
+
+def _apply_color_space(tensor: Tensor, color_space: str) -> Tensor:
+    """Apply the configured model-space transform to beauty channels."""
+    if color_space == "linear":
+        return tensor
+    if color_space != "log":
+        raise ValueError(f"Unsupported color_space: {color_space!r}")
+
+    transformed = tensor.clone()
+    if transformed.ndim == 4:
+        transformed[:, :3] = torch.log1p(transformed[:, :3].clamp_min(0.0))
+        return transformed
+    if transformed.ndim == 5:
+        transformed[:, :, :3] = torch.log1p(transformed[:, :, :3].clamp_min(0.0))
+        return transformed
+    raise ValueError(f"Unsupported tensor rank for color transform: {transformed.ndim}")
+
+
+def _inverse_color_space(tensor: Tensor, color_space: str) -> Tensor:
+    """Map beauty channels from model space back to linear space."""
+    if color_space == "linear":
+        return tensor
+    if color_space != "log":
+        raise ValueError(f"Unsupported color_space: {color_space!r}")
+
+    restored = tensor.clone()
+    if restored.ndim == 4:
+        restored[:, :3] = torch.expm1(restored[:, :3]).clamp_min(0.0)
+        return restored
+    if restored.ndim == 5:
+        restored[:, :, :3] = torch.expm1(restored[:, :, :3]).clamp_min(0.0)
+        return restored
+    raise ValueError(f"Unsupported tensor rank for inverse color transform: {restored.ndim}")
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -237,6 +318,8 @@ def train(
     resume: Optional[Path] = None,
     use_amp: bool = True,
     loss_name: str = "noise-weighted-l1",
+    color_space: str = "linear",
+    scheduler_name: str = "cosine",
 ) -> None:
     """Run the training loop.
 
@@ -255,6 +338,8 @@ def train(
         resume: Path to a checkpoint to resume from.
         use_amp: Whether to use Automatic Mixed Precision training.
         loss_name: Loss function to optimise.
+        color_space: Input/target color space used by the model.
+        scheduler_name: LR scheduler strategy.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -265,10 +350,20 @@ def train(
         [p for p in model.parameters() if p.requires_grad],
         lr=lr, weight_decay=weight_decay,
     )
-    scheduler = warmup_cosine_schedule(optimizer, warmup_epochs, epochs)
+    scheduler = _make_scheduler(
+        scheduler_name,
+        optimizer,
+        warmup_epochs=warmup_epochs,
+        total_epochs=epochs,
+    )
     criterion = _make_loss(loss_name)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
     writer = SummaryWriter(log_dir=str(output_dir / "runs"))
+    training_config = {
+        "loss_name": loss_name,
+        "color_space": color_space,
+        "scheduler_name": scheduler_name,
+    }
 
     try:
         start_epoch = 0
@@ -296,13 +391,21 @@ def train(
                     clean = clean.to(device)
                     sigma_map = sigma_map.to(device)
                     ref_idx = model._ref_idx
-                    clean_ref = clean[:, ref_idx]          # (B, C, H, W) — reference frame
+                    clean_linear_ref = clean[:, ref_idx]   # (B, C, H, W) — reference frame
+                    noisy = _apply_color_space(noisy, color_space)
+                    clean = _apply_color_space(clean, color_space)
+                    sigma_map = _apply_color_space(sigma_map, color_space)
+                    clean_ref = clean[:, ref_idx]
                     sigma_ref = sigma_map[:, ref_idx]
                 else:
                     noisy, clean, sigma_map = batch        # (B, C, H, W) each
                     noisy = noisy.to(device)
                     clean = clean.to(device)
                     sigma_map = sigma_map.to(device)
+                    clean_linear_ref = clean
+                    noisy = _apply_color_space(noisy, color_space)
+                    clean = _apply_color_space(clean, color_space)
+                    sigma_map = _apply_color_space(sigma_map, color_space)
                     clean_ref = clean
                     sigma_ref = sigma_map
 
@@ -322,17 +425,48 @@ def train(
 
                 epoch_loss += loss.item()
                 with torch.no_grad():
-                    epoch_psnr += psnr(output, clean_ref)
-
-            scheduler.step()
+                    epoch_psnr += psnr(_inverse_color_space(output, color_space), clean_linear_ref)
             n_steps = len(loader)
             avg_loss = epoch_loss / n_steps
             avg_psnr = epoch_psnr / n_steps
             elapsed = time.perf_counter() - t0
-            current_lr = scheduler.get_last_lr()[0]
+            val_loss = float("nan")
+            val_psnr = float("nan")
 
             writer.add_scalar("train/loss", avg_loss, epoch)
             writer.add_scalar("train/psnr", avg_psnr, epoch)
+
+            # Validation
+            if val_loader is not None:
+                val_loss, val_psnr = _validate(
+                    model,
+                    val_loader,
+                    device,
+                    is_temporal,
+                    use_amp,
+                    criterion,
+                    color_space,
+                )
+                writer.add_scalar("val/loss", val_loss, epoch)
+                writer.add_scalar("val/psnr", val_psnr, epoch)
+                if val_psnr > best_psnr:
+                    best_psnr = val_psnr
+                    _save_checkpoint(
+                        output_dir / "best.pth",
+                        model,
+                        optimizer,
+                        scheduler,
+                        epoch,
+                        best_psnr,
+                        training_config=training_config,
+                    )
+
+            if scheduler_name == "plateau":
+                scheduler.step(val_loss if val_loader is not None else avg_loss)
+            else:
+                scheduler.step()
+
+            current_lr = scheduler.get_last_lr()[0]
             writer.add_scalar("train/lr", current_lr, epoch)
 
             print(
@@ -340,28 +474,26 @@ def train(
                 f"loss={avg_loss:.6f}  psnr={avg_psnr:.2f}dB  "
                 f"lr={current_lr:.2e}  t={elapsed:.1f}s"
             )
-
-            # Validation
             if val_loader is not None:
-                val_psnr = _validate(model, val_loader, device, is_temporal, use_amp)
-                writer.add_scalar("val/psnr", val_psnr, epoch)
-                print(f"  val psnr={val_psnr:.2f}dB")
-                if val_psnr > best_psnr:
-                    best_psnr = val_psnr
-                    _save_checkpoint(
-                        output_dir / "best.pth", model, optimizer, scheduler, epoch, best_psnr
-                    )
+                print(f"  val loss={val_loss:.6f}  val psnr={val_psnr:.2f}dB")
 
             # Periodic checkpoint
             if (epoch + 1) % checkpoint_every == 0:
                 _save_checkpoint(
                     output_dir / f"epoch_{epoch + 1:04d}.pth",
                     model, optimizer, scheduler, epoch, best_psnr,
+                    training_config=training_config,
                 )
 
         # Final checkpoint
         _save_checkpoint(
-            output_dir / "final.pth", model, optimizer, scheduler, epochs - 1, best_psnr
+            output_dir / "final.pth",
+            model,
+            optimizer,
+            scheduler,
+            epochs - 1,
+            best_psnr,
+            training_config=training_config,
         )
         print(f"Training complete.  Best val PSNR: {best_psnr:.2f} dB")
     finally:
@@ -376,23 +508,44 @@ def _validate(
     device: torch.device,
     is_temporal: bool,
     use_amp: bool,
-) -> float:
+    criterion: nn.Module,
+    color_space: str,
+) -> tuple[float, float]:
     model.eval()
     total_psnr = 0.0
+    total_loss = 0.0
     with torch.no_grad():
         for batch in loader:
             if is_temporal:
-                noisy, clean, _ = batch
+                noisy, clean, sigma_map = batch
                 ref_idx = model._ref_idx
-                clean_ref = clean[:, ref_idx].to(device)
+                noisy = noisy.to(device)
+                clean = clean.to(device)
+                sigma_map = sigma_map.to(device)
+                clean_linear_ref = clean[:, ref_idx]
+                noisy = _apply_color_space(noisy, color_space)
+                clean = _apply_color_space(clean, color_space)
+                sigma_map = _apply_color_space(sigma_map, color_space)
+                clean_ref = clean[:, ref_idx]
+                sigma_ref = sigma_map[:, ref_idx]
             else:
-                noisy, clean, _ = batch
-                clean_ref = clean.to(device)
-            noisy = noisy.to(device)
+                noisy, clean, sigma_map = batch
+                noisy = noisy.to(device)
+                clean = clean.to(device)
+                sigma_map = sigma_map.to(device)
+                clean_linear_ref = clean
+                noisy = _apply_color_space(noisy, color_space)
+                clean = _apply_color_space(clean, color_space)
+                sigma_map = _apply_color_space(sigma_map, color_space)
+                clean_ref = clean
+                sigma_ref = sigma_map
             with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
                 output = model(noisy)
-            total_psnr += psnr(output, clean_ref)
-    return total_psnr / max(1, len(loader))
+                loss = criterion(output, clean_ref, sigma_ref)
+            total_loss += loss.item()
+            total_psnr += psnr(_inverse_color_space(output, color_space), clean_linear_ref)
+    n_batches = max(1, len(loader))
+    return total_loss / n_batches, total_psnr / n_batches
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +623,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["noise-weighted-l1", "l1", "log-l1"],
         default="noise-weighted-l1",
         help="Training objective. 'log-l1' often produces a smoother-looking result.",
+    )
+    parser.add_argument(
+        "--color-space",
+        choices=["linear", "log"],
+        default="linear",
+        help="Model-space preprocessing for beauty channels. Use 'log' for true log-space training.",
+    )
+    parser.add_argument(
+        "--scheduler",
+        choices=["cosine", "plateau", "none"],
+        default="cosine",
+        help="LR scheduler strategy.",
     )
     parser.add_argument("--patch-size", type=int, default=128)
     parser.add_argument("--patches-per-image", type=int, default=64)
@@ -661,6 +826,8 @@ def _config_summary_lines(
     val_crop_mode: str,
     val_grid_size: int,
     loss_name: str = "noise-weighted-l1",
+    color_space: str = "linear",
+    scheduler_name: str = "cosine",
 ) -> list[str]:
     """Return human-readable startup lines for sampling and validation config."""
     lines: list[str] = []
@@ -671,6 +838,8 @@ def _config_summary_lines(
     else:
         lines.append(f"Architecture: NAFNet spatial ({label})")
     lines.append(f"Loss: {loss_name}")
+    lines.append(f"Color space: {color_space}")
+    lines.append(f"Scheduler: {scheduler_name}")
 
     if is_temporal:
         if random_temporal_windows:
@@ -772,6 +941,8 @@ def main() -> None:
     val_windows_per_sequence, val_crop_mode, val_grid_size = _validation_temporal_config(
         args, parser, val_mode
     )
+    if args.color_space == "log" and args.loss == "log-l1":
+        parser.error("--color-space log already trains in log space; use --loss l1 instead of --loss log-l1.")
     _temporal_model_config(args, parser)
     val_patch_repeats = _validation_patch_repeats(val_crop_mode, val_grid_size)
 
@@ -921,6 +1092,8 @@ def main() -> None:
         val_crop_mode=val_crop_mode,
         val_grid_size=val_grid_size,
         loss_name=args.loss,
+        color_space=args.color_space,
+        scheduler_name=args.scheduler,
     ):
         print(line)
 
@@ -938,6 +1111,8 @@ def main() -> None:
         use_amp=not args.no_amp,
         resume=Path(args.resume) if args.resume else None,
         loss_name=args.loss,
+        color_space=args.color_space,
+        scheduler_name=args.scheduler,
     )
 
 
