@@ -82,7 +82,7 @@ from dataset import (
     PatchDataset,
     VideoSequenceDataset,
 )
-from losses import NoiseWeightedL1Loss
+from losses import L1Loss, LogL1Loss, NoiseWeightedL1Loss
 from models import (
     NAFNet,
     NAFNetConfig,
@@ -206,6 +206,17 @@ def _module_device(module: nn.Module) -> torch.device:
     return tensor.device if tensor is not None else torch.device("cpu")
 
 
+def _make_loss(name: str) -> nn.Module:
+    """Construct the requested training loss."""
+    if name == "noise-weighted-l1":
+        return NoiseWeightedL1Loss(epsilon=0.01)
+    if name == "l1":
+        return L1Loss()
+    if name == "log-l1":
+        return LogL1Loss()
+    raise ValueError(f"Unsupported loss: {name!r}")
+
+
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
@@ -225,6 +236,7 @@ def train(
     device: Optional[torch.device] = None,
     resume: Optional[Path] = None,
     use_amp: bool = True,
+    loss_name: str = "noise-weighted-l1",
 ) -> None:
     """Run the training loop.
 
@@ -242,6 +254,7 @@ def train(
         device: Target device.  Defaults to CUDA if available, else CPU.
         resume: Path to a checkpoint to resume from.
         use_amp: Whether to use Automatic Mixed Precision training.
+        loss_name: Loss function to optimise.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -253,7 +266,7 @@ def train(
         lr=lr, weight_decay=weight_decay,
     )
     scheduler = warmup_cosine_schedule(optimizer, warmup_epochs, epochs)
-    criterion = NoiseWeightedL1Loss(epsilon=0.01)
+    criterion = _make_loss(loss_name)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
     writer = SummaryWriter(log_dir=str(output_dir / "runs"))
 
@@ -452,6 +465,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument(
+        "--loss",
+        choices=["noise-weighted-l1", "l1", "log-l1"],
+        default="noise-weighted-l1",
+        help="Training objective. 'log-l1' often produces a smoother-looking result.",
+    )
     parser.add_argument("--patch-size", type=int, default=128)
     parser.add_argument("--patches-per-image", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
@@ -641,6 +660,7 @@ def _config_summary_lines(
     val_windows_per_sequence: Optional[int] = None,
     val_crop_mode: str,
     val_grid_size: int,
+    loss_name: str = "noise-weighted-l1",
 ) -> list[str]:
     """Return human-readable startup lines for sampling and validation config."""
     lines: list[str] = []
@@ -650,6 +670,7 @@ def _config_summary_lines(
         lines.append(f"Architecture: NAFNet temporal ({label})")
     else:
         lines.append(f"Architecture: NAFNet spatial ({label})")
+    lines.append(f"Loss: {loss_name}")
 
     if is_temporal:
         if random_temporal_windows:
@@ -899,6 +920,7 @@ def main() -> None:
         val_windows_per_sequence=val_windows_per_sequence,
         val_crop_mode=val_crop_mode,
         val_grid_size=val_grid_size,
+        loss_name=args.loss,
     ):
         print(line)
 
@@ -915,6 +937,7 @@ def main() -> None:
         lr=args.lr,
         use_amp=not args.no_amp,
         resume=Path(args.resume) if args.resume else None,
+        loss_name=args.loss,
     )
 
 

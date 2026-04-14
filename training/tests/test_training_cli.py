@@ -13,6 +13,7 @@ from dataset import CombinedDataset
 from training import (
     _config_summary_lines,
     _dataset_summary_lines,
+    _make_loss,
     _make_noise_generator,
     _temporal_model_config,
     _temporal_sampling_config,
@@ -51,6 +52,11 @@ class TestTrainingCli:
         args = parser.parse_args(["--data", "images", "--noise", "gaussian"])
         assert args.noise == "gaussian"
 
+    def test_loss_flag_parses_explicitly(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--loss", "log-l1"])
+        assert args.loss == "log-l1"
+
     def test_noise_abbreviation_is_rejected(self) -> None:
         parser = build_parser()
         with pytest.raises(SystemExit):
@@ -70,6 +76,12 @@ class TestTrainingCli:
         parser = build_parser()
         args = parser.parse_args(["--data", "images", "--noise", "mixed"])
         assert isinstance(_make_noise_generator(args, parser), MixedNoiseGenerator)
+
+    def test_l1_loss_selected(self) -> None:
+        assert isinstance(_make_loss("l1"), torch.nn.Module)
+
+    def test_log_l1_loss_selected(self) -> None:
+        assert _make_loss("log-l1").__class__.__name__ == "LogL1Loss"
 
     def test_real_noise_inputs_require_mixed_mode(self) -> None:
         parser = build_parser()
@@ -217,6 +229,19 @@ class TestTrainingCli:
         assert "Train temporal sampling: random windows (4/sequence/epoch)" in lines
         assert "Val temporal sampling: deterministic windows (3/sequence)" in lines
         assert "Val crop mode: grid (2x2)" in lines
+
+    def test_config_summary_lines_include_loss(self) -> None:
+        lines = _config_summary_lines(
+            is_temporal=False,
+            random_temporal_windows=False,
+            windows_per_sequence=None,
+            val_mode=None,
+            val_windows_per_sequence=None,
+            val_crop_mode="random",
+            val_grid_size=2,
+            loss_name="log-l1",
+        )
+        assert "Loss: log-l1" in lines
 
     def test_dataset_summary_uses_image_count_when_available(self) -> None:
         lines = _dataset_summary_lines("Train", _DummyDataset(128, num_images=8))

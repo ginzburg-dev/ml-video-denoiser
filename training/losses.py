@@ -1,19 +1,25 @@
 """Loss functions for denoiser training.
 
-The primary loss is noise-weighted L1: pixels with higher estimated noise
-standard deviation contribute less to the gradient, preventing the loss from
-being dominated by bright, noisy regions and encouraging uniform fidelity
-across the dynamic range.
+Available objectives:
 
-    loss = mean( |output - clean| / (sigma_map + epsilon) )
+``noise-weighted-l1``
+    The default paired-data loss. Pixels with higher estimated noise standard
+    deviation contribute less to the gradient:
 
-This is equivalent to maximum-likelihood estimation under a Laplace noise
-model with location-dependent scale.
+        mean(|output - clean| / (sigma_map + epsilon))
+
+``l1``
+    Plain L1 reconstruction loss in linear space.
+
+``log-l1``
+    L1 after ``log1p`` compression. This tends to emphasise low / mid
+    luminance differences and can produce a visually smoother HDR result.
 """
 
 import torch
 import torch.nn as nn
 from torch import Tensor
+from typing import Optional
 
 
 class NoiseWeightedL1Loss(nn.Module):
@@ -38,7 +44,10 @@ class NoiseWeightedL1Loss(nn.Module):
         self._reduction = reduction
 
     def forward(
-        self, output: Tensor, clean: Tensor, sigma_map: Tensor
+        self,
+        output: Tensor,
+        clean: Tensor,
+        sigma_map: Optional[Tensor] = None,
     ) -> Tensor:
         """Compute noise-weighted L1 loss.
 
@@ -50,6 +59,8 @@ class NoiseWeightedL1Loss(nn.Module):
         Returns:
             Scalar loss tensor.
         """
+        if sigma_map is None:
+            raise ValueError("NoiseWeightedL1Loss requires sigma_map.")
         weights = 1.0 / (sigma_map + self._epsilon)
         elementwise = weights * torch.abs(output - clean)
         if self._reduction == "mean":
@@ -63,5 +74,28 @@ class L1Loss(nn.Module):
     Useful as a baseline or when sigma_map is not available.
     """
 
-    def forward(self, output: Tensor, clean: Tensor) -> Tensor:
+    def forward(
+        self,
+        output: Tensor,
+        clean: Tensor,
+        sigma_map: Optional[Tensor] = None,
+    ) -> Tensor:
         return torch.abs(output - clean).mean()
+
+
+class LogL1Loss(nn.Module):
+    """Plain L1 in log-compressed space.
+
+    Negative values are clamped to zero before ``log1p`` so the transform stays
+    well-defined for HDR inputs with occasional undershoot.
+    """
+
+    def forward(
+        self,
+        output: Tensor,
+        clean: Tensor,
+        sigma_map: Optional[Tensor] = None,
+    ) -> Tensor:
+        output_log = torch.log1p(output.clamp_min(0.0))
+        clean_log = torch.log1p(clean.clamp_min(0.0))
+        return torch.abs(output_log - clean_log).mean()
