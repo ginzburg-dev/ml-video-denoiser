@@ -123,6 +123,18 @@ def _inverse_color_space_tensor(tensor: Tensor, color_space: str) -> Tensor:
     raise ValueError(f"Unsupported tensor rank for inverse color transform: {restored.ndim}")
 
 
+def _resolve_model_type(cli_model: str, metadata: Optional[dict]) -> str:
+    """Choose the effective inference mode.
+
+    When checkpoint metadata is present, trust the checkpoint over the CLI
+    default so temporal checkpoints cannot be accidentally run through the
+    spatial path.
+    """
+    if metadata is not None:
+        return metadata["model_type"]
+    return cli_model
+
+
 def denoise_image(
     model: torch.nn.Module,
     noisy: np.ndarray,
@@ -394,6 +406,7 @@ def main() -> None:
     metadata = ckpt.get("model_metadata") if isinstance(ckpt, dict) else None
     training_config = ckpt.get("training_config", {}) if isinstance(ckpt, dict) else {}
     color_space = args.color_space or training_config.get("color_space", "linear")
+    model_type = _resolve_model_type(args.model, metadata)
     if metadata is not None:
         try:
             model = build_model_from_metadata(metadata)
@@ -424,7 +437,7 @@ def main() -> None:
         )
         if args.naf_preset and args.naf_base != 32:
             naf_config.base_channels = args.naf_base
-        if args.model == "temporal":
+        if model_type == "temporal":
             try:
                 validate_temporal_num_frames(args.num_frames)
             except ValueError as exc:
@@ -434,10 +447,10 @@ def main() -> None:
             model = NAFNet(naf_config)
         print(
             "Reconstructed model from CLI flags: "
-            f"type={args.model}, base_channels={naf_config.base_channels}"
+            f"type={model_type}, base_channels={naf_config.base_channels}"
             + (
                 f", num_frames={args.num_frames}, use_warp={args.use_warp}"
-                if args.model == "temporal"
+                if model_type == "temporal"
                 else ""
             )
             + f", color_space={color_space}"
@@ -445,7 +458,7 @@ def main() -> None:
     state = ckpt.get("model_state_dict", ckpt)
     model.load_state_dict(state)
     model.to(device).eval()
-    print(f"Loaded nafnet/{args.model} from {args.checkpoint}")
+    print(f"Loaded nafnet/{model_type} from {args.checkpoint}")
 
     # Determine image pairs
     _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".exr"}
@@ -473,7 +486,7 @@ def main() -> None:
     use_amp = not args.no_amp
     psnr_values, ssim_values = [], []
 
-    if args.model == "temporal":
+    if model_type == "temporal":
         if args.tile > 0:
             parser.error("--tile is not supported for temporal inference.")
         noisy_paths = [noisy_path for noisy_path, _ in pairs]

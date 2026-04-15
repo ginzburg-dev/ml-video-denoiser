@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from infer import _clip_indices, _load_image, _save_image, compute_ssim, denoise_image, denoise_temporal_frame
+from infer import _clip_indices, _load_image, _resolve_model_type, _save_image, compute_ssim, denoise_image, denoise_temporal_frame
 
 
 class TestInferImageLoading:
@@ -117,6 +117,14 @@ class TestSpatialInfer:
         )
 
         assert np.allclose(output, noisy, rtol=1e-5, atol=1e-6)
+
+
+class TestInferModeSelection:
+    def test_checkpoint_metadata_overrides_cli_default(self) -> None:
+        assert _resolve_model_type("spatial", {"model_type": "temporal"}) == "temporal"
+
+    def test_cli_mode_used_without_metadata(self) -> None:
+        assert _resolve_model_type("spatial", None) == "spatial"
 
 
 class TestMetrics:

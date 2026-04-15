@@ -45,6 +45,7 @@ compile_commands.json
 
 # IDE
 .vscode/
+.claude/worktrees/
 .idea/
 *.swp
 *.swo
