@@ -132,7 +132,7 @@ class TestNAFNetIdentityInit:
 
 
 class TestNAFNetConfigs:
-    @pytest.mark.parametrize("preset", ["tiny", "small", "standard", "wide"])
+    @pytest.mark.parametrize("preset", ["tiny", "small", "exp048", "standard", "wide"])
     def test_preset_builds_and_runs(self, preset: str) -> None:
         cfg = getattr(NAFNetConfig, preset)()
         model = NAFNet(cfg).eval()
@@ -140,6 +140,14 @@ class TestNAFNetConfigs:
         with torch.no_grad():
             out = model(x)
         assert out.shape == (1, 3, 32, 32)
+
+    def test_exp048_preset_matches_old_backbone_shape(self) -> None:
+        cfg = NAFNetConfig.exp048()
+        assert cfg.base_channels == 64
+        assert cfg.enc_blocks == (1, 1, 1)
+        assert cfg.middle_blocks == 2
+        assert cfg.dec_blocks == (1, 1, 1)
+        assert cfg.dw_expand == 2
 
     def test_tiny_fewer_params_than_wide(self) -> None:
         tiny = sum(p.numel() for p in NAFNet(NAFNetConfig.tiny()).parameters())
@@ -184,7 +192,7 @@ class TestNAFNetTemporalForward:
 
 
 class TestNAFNetTemporalConfigs:
-    @pytest.mark.parametrize("preset", ["tiny", "small"])
+    @pytest.mark.parametrize("preset", ["tiny", "small", "exp048"])
     def test_preset_builds_and_runs(self, preset: str) -> None:
         cfg = getattr(NAFNetConfig, preset)()
         model = NAFNetTemporal(cfg).eval()

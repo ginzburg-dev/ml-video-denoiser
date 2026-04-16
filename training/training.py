@@ -568,9 +568,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--naf-base", type=int, default=32, metavar="C",
                         help="Base channel count for NAFNet residual/temporal models (default: 32).  "
                              "Overrides the selected preset base_channels when both are given.")
-    parser.add_argument("--size", choices=["tiny", "small", "standard", "wide"], default=None,
-                        help="NAFNet size preset: tiny (~0.4M), small (~7M), standard (~24M), "
-                             "wide (~67M).  When set, uses the preset block counts and "
+    parser.add_argument("--size", choices=["tiny", "small", "exp048", "standard", "wide"], default=None,
+                        help="NAFNet size preset: tiny, small, exp048, standard, "
+                             "wide.  When set, uses the preset block counts and "
                              "base_channels; --naf-base overrides the base_channels only.")
     parser.add_argument("--num-frames", type=int, default=3, metavar="T",
                         help="Temporal window size for --model temporal (default: 3).")
@@ -928,6 +928,7 @@ def main() -> None:
     _naf_preset_map = {
         "tiny": NAFNetConfig.tiny,
         "small": NAFNetConfig.small,
+        "exp048": NAFNetConfig.exp048,
         "standard": NAFNetConfig.standard,
         "wide": NAFNetConfig.wide,
     }

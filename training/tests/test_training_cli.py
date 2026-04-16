@@ -42,6 +42,11 @@ class TestTrainingCli:
         args = parser.parse_args(["--data", "images", "--size", "standard"])
         assert args.size == "standard"
 
+    def test_exp048_size_flag_selects_old_style_model_preset(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--data", "images", "--size", "exp048"])
+        assert args.size == "exp048"
+
     def test_naf_preset_flag_is_rejected(self) -> None:
         parser = build_parser()
         with pytest.raises(SystemExit):

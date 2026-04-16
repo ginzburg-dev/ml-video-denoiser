@@ -390,6 +390,18 @@ class NAFNetConfig:
         return cls(base_channels=32, enc_blocks=(1, 1, 1, 1), middle_blocks=1, dec_blocks=(1, 1, 1, 1))
 
     @classmethod
+    def exp048(cls) -> "NAFNetConfig":
+        """Backbone shaped to match the old exp_048 NAFNetResidual more closely."""
+        return cls(
+            base_channels=64,
+            enc_blocks=(1, 1, 1),
+            middle_blocks=2,
+            dec_blocks=(1, 1, 1),
+            dw_expand=2,
+            ffn_expand=2,
+        )
+
+    @classmethod
     def standard(cls) -> "NAFNetConfig":
         """NAFNet-baseline (32 base, deeper bottleneck)."""
         return cls(base_channels=32, enc_blocks=(1, 1, 1, 28), middle_blocks=1, dec_blocks=(1, 1, 1, 1))

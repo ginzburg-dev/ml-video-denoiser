@@ -191,7 +191,7 @@ def main() -> None:
     parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
     parser.add_argument("--naf-base", type=int, default=32, metavar="C",
                         help="Base channel count for NAFNet models (default: 32).")
-    parser.add_argument("--naf-preset", choices=["tiny", "small", "standard", "wide"], default=None,
+    parser.add_argument("--naf-preset", choices=["tiny", "small", "exp048", "standard", "wide"], default=None,
                         help="NAFNet size preset.  --naf-base overrides base_channels when both given.")
     parser.add_argument("--num-frames", type=int, default=3, metavar="T",
                         help="Temporal window size for --model temporal (default: 3).")
@@ -206,6 +206,7 @@ def main() -> None:
     _preset_map = {
         "tiny": NAFNetConfig.tiny,
         "small": NAFNetConfig.small,
+        "exp048": NAFNetConfig.exp048,
         "standard": NAFNetConfig.standard,
         "wide": NAFNetConfig.wide,
     }
