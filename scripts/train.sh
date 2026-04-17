@@ -52,16 +52,20 @@ BATCH_SIZE="${BATCH_SIZE:-2}"
 PATCH_SIZE="${PATCH_SIZE:-128}"
 
 SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-150}"
-STAGE2_EPOCHS="${STAGE2_EPOCHS:-60}"
+STAGE2_EPOCHS="${STAGE2_EPOCHS:-120}"  # more epochs needed at lower LR
 STAGE3_EPOCHS="${STAGE3_EPOCHS:-100}"
 
 SPATIAL_LR="${SPATIAL_LR:-1e-4}"
-STAGE2_LR="${STAGE2_LR:-1e-4}"
+STAGE2_LR="${STAGE2_LR:-3e-5}"   # low — temporal_mix is only 174K params
 STAGE3_LR="${STAGE3_LR:-5e-5}"
+
+SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"
+STAGE2_LOSS="${STAGE2_LOSS:-log-l1}"  # log-l1 balances HDR range, reduces sharpening
+STAGE3_LOSS="${STAGE3_LOSS:-log-l1}"
 
 SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-10}"
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
-WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-3}"
+WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-6}"
 VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-1}"
 
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
@@ -94,7 +98,7 @@ else
     --model spatial \
     --size "$SIZE" \
     --color-space log \
-    --loss l1 \
+    --loss "$SPATIAL_LOSS" \
     --scheduler plateau \
     --lr "$SPATIAL_LR" \
     --batch-size "$BATCH_SIZE" \
@@ -126,7 +130,7 @@ uv run python training.py \
   --size "$SIZE" \
   --num-frames "$NUM_FRAMES" \
   --color-space log \
-  --loss l1 \
+  --loss "$STAGE2_LOSS" \
   --scheduler plateau \
   --lr "$STAGE2_LR" \
   --batch-size "$BATCH_SIZE" \
@@ -138,7 +142,8 @@ uv run python training.py \
   --random-temporal-windows \
   --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
   --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-  --val-crop-mode center \
+  --val-crop-mode grid \
+  --val-grid-size 3 \
   --spatial-weights "$SPATIAL_WEIGHTS" \
   --freeze-spatial \
   --output "$STAGE2_OUTPUT" \
@@ -167,7 +172,7 @@ uv run python training.py \
   --size "$SIZE" \
   --num-frames "$NUM_FRAMES" \
   --color-space log \
-  --loss l1 \
+  --loss "$STAGE3_LOSS" \
   --scheduler plateau \
   --lr "$STAGE3_LR" \
   --batch-size "$BATCH_SIZE" \
@@ -179,7 +184,8 @@ uv run python training.py \
   --random-temporal-windows \
   --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
   --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-  --val-crop-mode center \
+  --val-crop-mode grid \
+  --val-grid-size 3 \
   --resume "$STAGE2_OUTPUT/best.pth" \
   --output "$STAGE3_OUTPUT" \
   --workers "$WORKERS" \
