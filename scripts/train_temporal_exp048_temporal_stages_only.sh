@@ -29,6 +29,10 @@ uv run python training.py \
   --paired-noisy "$PAIRED_NOISY" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
+  --random-temporal-windows \
+  --windows-per-sequence 2 \
+  --val-windows-per-sequence 1 \
+  --val-crop-mode center \
   --spatial-weights "$SPATIAL_WEIGHTS" \
   --freeze-spatial \
   --output "$STAGE2_OUTPUT" \
@@ -47,6 +51,10 @@ uv run python training.py \
   --paired-noisy "$PAIRED_NOISY" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
+  --random-temporal-windows \
+  --windows-per-sequence 2 \
+  --val-windows-per-sequence 1 \
+  --val-crop-mode center \
   --spatial-weights "$SPATIAL_WEIGHTS" \
   --resume "$STAGE2_OUTPUT/best.pth" \
   --output "$STAGE3_OUTPUT" \
