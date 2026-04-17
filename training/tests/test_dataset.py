@@ -448,6 +448,16 @@ class TestPairedPatchDataset:
         )
         assert ds.num_pairs == 2
 
+    def test_sequence_dirs_match_by_relative_path_when_frame_stems_repeat(self, tmp_path: Path) -> None:
+        clean_root, noisy_root = _write_paired_sequences(tmp_path, n_sequences=2, n_frames=4)
+        ds = PairedPatchDataset(
+            clean_root,
+            noisy_root,
+            patch_size=64,
+            patches_per_image=1,
+        )
+        assert ds.num_pairs == 8
+
 
 # ---------------------------------------------------------------------------
 # PairedVideoSequenceDataset

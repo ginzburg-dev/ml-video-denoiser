@@ -145,18 +145,33 @@ def _collect_images_spread(
     return sorted(set(paths)), flat_fallback
 
 
-def _match_named_images(clean_paths: Sequence[Path], noisy_paths: Sequence[Path]) -> list[tuple[Path, Path]]:
-    """Match image paths by stem and raise on missing / extra names."""
-    clean_by_stem = {p.stem: p for p in clean_paths}
-    noisy_by_stem = {p.stem: p for p in noisy_paths}
+def _match_keyed_images(
+    clean_paths: Sequence[Path],
+    noisy_paths: Sequence[Path],
+    *,
+    clean_root: Path,
+    noisy_root: Path,
+) -> list[tuple[Path, Path]]:
+    """Match image paths by relative subpath + stem, ignoring extension."""
 
-    if len(clean_by_stem) != len(clean_paths) or len(noisy_by_stem) != len(noisy_paths):
-        raise ValueError("Duplicate image stems detected while matching paired frames by name.")
+    def _build_keyed_map(paths: Sequence[Path], root: Path) -> dict[str, Path]:
+        keyed: dict[str, Path] = {}
+        for path in paths:
+            key = str(path.relative_to(root).with_suffix(""))
+            if key in keyed:
+                raise ValueError(
+                    "Duplicate image stems detected while matching paired frames by name."
+                )
+            keyed[key] = path
+        return keyed
 
-    clean_stems = set(clean_by_stem)
-    noisy_stems = set(noisy_by_stem)
-    missing_noisy = sorted(clean_stems - noisy_stems)
-    extra_noisy = sorted(noisy_stems - clean_stems)
+    clean_by_key = _build_keyed_map(clean_paths, clean_root)
+    noisy_by_key = _build_keyed_map(noisy_paths, noisy_root)
+
+    clean_keys = set(clean_by_key)
+    noisy_keys = set(noisy_by_key)
+    missing_noisy = sorted(clean_keys - noisy_keys)
+    extra_noisy = sorted(noisy_keys - clean_keys)
     if missing_noisy or extra_noisy:
         problems: list[str] = []
         if missing_noisy:
@@ -165,7 +180,7 @@ def _match_named_images(clean_paths: Sequence[Path], noisy_paths: Sequence[Path]
             problems.append(f"unexpected noisy frames: {', '.join(extra_noisy[:3])}")
         raise ValueError("Frame mismatch between clean and noisy sequences: " + "; ".join(problems))
 
-    return [(clean_by_stem[stem], noisy_by_stem[stem]) for stem in sorted(clean_stems)]
+    return [(clean_by_key[key], noisy_by_key[key]) for key in sorted(clean_keys)]
 
 
 def _load_image(path: Path) -> np.ndarray:
@@ -654,25 +669,12 @@ def _match_pairs(
         raise ValueError(f"No noisy images found in: {noisy_dir}")
 
     if match_by_name:
-        if frames_per_sequence is not None:
-            clean_root = Path(clean_dir)
-            noisy_root = Path(noisy_dir)
-            pairs: list[tuple[Path, Path]] = []
-            missing_noisy: list[str] = []
-            for clean_path in clean_paths:
-                rel_path = clean_path.relative_to(clean_root)
-                noisy_path = noisy_root / rel_path
-                if noisy_path.exists():
-                    pairs.append((clean_path, noisy_path))
-                else:
-                    missing_noisy.append(str(rel_path))
-            if missing_noisy:
-                raise ValueError(
-                    "Frame mismatch between clean and noisy sequences: "
-                    f"missing noisy frames: {', '.join(missing_noisy[:3])}"
-                )
-            return sorted(pairs)
-        return _match_named_images(clean_paths, noisy_paths)
+        return _match_keyed_images(
+            clean_paths,
+            noisy_paths,
+            clean_root=Path(clean_dir),
+            noisy_root=Path(noisy_dir),
+        )
     else:
         if len(clean_paths) != len(noisy_paths):
             raise ValueError(

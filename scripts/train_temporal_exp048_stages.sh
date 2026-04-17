@@ -14,6 +14,8 @@ SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$SPATIAL_OUTPUT/best.pth}"
 STAGE2_OUTPUT="${STAGE2_OUTPUT:-checkpoints/temporal_exp048_stage2}"
 STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/temporal_exp048_stage3}"
 WORKERS="${WORKERS:-12}"
+SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-10}"
+SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
 
 cd "$TRAINING_DIR"
 
@@ -25,10 +27,15 @@ uv run python training.py \
   --scheduler plateau \
   --lr 1e-4 \
   --batch-size 2 \
+  --patch-size 128 \
   --paired-clean "$PAIRED_CLEAN" \
   --paired-noisy "$PAIRED_NOISY" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
+  --frames-per-sequence "$SPATIAL_FRAMES_PER_SEQUENCE" \
+  --val-frames-per-sequence "$SPATIAL_VAL_FRAMES_PER_SEQUENCE" \
+  --val-crop-mode grid \
+  --val-grid-size 3 \
   --output "$SPATIAL_OUTPUT" \
   --workers "$WORKERS" \
   --epochs 60

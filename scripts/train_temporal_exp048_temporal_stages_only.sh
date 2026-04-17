@@ -18,22 +18,6 @@ WORKERS="${WORKERS:-12}"
 cd "$TRAINING_DIR"
 
 uv run python training.py \
-  --model spatial \
-  --size exp048 \
-  --color-space log \
-  --loss l1 \
-  --scheduler plateau \
-  --lr 1e-4 \
-  --batch-size 2 \
-  --paired-clean "$PAIRED_CLEAN" \
-  --paired-noisy "$PAIRED_NOISY" \
-  --val-clean "$VAL_CLEAN" \
-  --val-noisy "$VAL_NOISY" \
-  --output "$SPATIAL_OUTPUT" \
-  --workers "$WORKERS" \
-  --epochs 60
-
-uv run python training.py \
   --model temporal \
   --size exp048 \
   --color-space log \
