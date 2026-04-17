@@ -60,8 +60,8 @@ STAGE2_LR="${STAGE2_LR:-3e-5}"   # low — temporal_mix is only 174K params
 STAGE3_LR="${STAGE3_LR:-5e-5}"
 
 SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"
-STAGE2_LOSS="${STAGE2_LOSS:-log-l1}"  # log-l1 balances HDR range, reduces sharpening
-STAGE3_LOSS="${STAGE3_LOSS:-log-l1}"
+STAGE2_LOSS="${STAGE2_LOSS:-l1}"  # --color-space log already handles HDR range
+STAGE3_LOSS="${STAGE3_LOSS:-l1}"
 
 SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-10}"
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
@@ -142,8 +142,7 @@ uv run python training.py \
   --random-temporal-windows \
   --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
   --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-  --val-crop-mode grid \
-  --val-grid-size 3 \
+  --val-crop-mode center \
   --spatial-weights "$SPATIAL_WEIGHTS" \
   --freeze-spatial \
   --output "$STAGE2_OUTPUT" \
@@ -184,8 +183,7 @@ uv run python training.py \
   --random-temporal-windows \
   --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
   --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-  --val-crop-mode grid \
-  --val-grid-size 3 \
+  --val-crop-mode center \
   --resume "$STAGE2_OUTPUT/best.pth" \
   --output "$STAGE3_OUTPUT" \
   --workers "$WORKERS" \
