@@ -958,7 +958,12 @@ class PairedVideoSequenceDataset(Dataset):
                     p for p in noisy_sub.iterdir()
                     if p.suffix.lower() in _IMAGE_EXTENSIONS
                 )
-                matched_frames = _match_named_images(clean_frames, noisy_frames)
+                matched_frames = _match_keyed_images(
+                    clean_frames,
+                    noisy_frames,
+                    clean_root=clean_sub,
+                    noisy_root=noisy_sub,
+                )
                 if len(matched_frames) >= num_frames:
                     matched_clean = [clean_path for clean_path, _ in matched_frames]
                     matched_noisy = [noisy_path for _, noisy_path in matched_frames]
