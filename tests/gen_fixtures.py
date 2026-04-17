@@ -38,7 +38,7 @@ from export import export_model              # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Tiny model config (not exposed in ModelConfig — defined here only)
+# Tiny model config (defined here — not part of the public NAFNetConfig presets)
 # ---------------------------------------------------------------------------
 
 def tiny_config() -> NAFNetConfig:

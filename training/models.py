@@ -269,18 +269,48 @@ def load_spatial_weights(model: "NAFNetTemporal", path: "Path | str") -> int:
     return len(transferred)
 
 
+def _spatial_modules(model: "NAFNetTemporal") -> tuple:
+    return (model.intro, model.encoders, model.downs, model.middle, model.ups, model.decoders, model.ending)
+
+
 def freeze_spatial(model: "NAFNetTemporal") -> None:
-    """Freeze the spatial backbone of a temporal model."""
-    for module in (model.intro, model.encoders, model.downs, model.middle, model.ups, model.decoders, model.ending):
+    """Freeze the spatial backbone so only temporal components receive gradients.
+
+    Sets ``requires_grad=False`` on all spatial parameters and switches those
+    sub-modules to eval mode.  Eval mode matters even for LayerNorm: it disables
+    any Dropout inside NAFBlocks so frozen layers don't contribute noise during
+    stage-2 temporal training.
+
+    ``NAFNetTemporal.train()`` is also patched to keep the frozen backbone in eval
+    mode even when the outer model is switched to train — call ``unfreeze_spatial``
+    to undo this.
+    """
+    for module in _spatial_modules(model):
         for p in module.parameters():
             p.requires_grad_(False)
+        module.eval()
+
+    # Patch train() so the frozen backbone stays in eval during stage-2 training
+    _orig_train = model.__class__.train
+
+    def _train_with_frozen(self: "NAFNetTemporal", mode: bool = True):
+        _orig_train(self, mode)
+        if getattr(self, "_spatial_frozen", False):
+            for m in _spatial_modules(self):
+                m.eval()
+        return self
+
+    model._spatial_frozen = True  # type: ignore[attr-defined]
+    model.__class__.train = _train_with_frozen  # type: ignore[method-assign]
 
 
 def unfreeze_spatial(model: "NAFNetTemporal") -> None:
-    """Re-enable gradients for all spatial parameters."""
-    for module in (model.intro, model.encoders, model.downs, model.middle, model.ups, model.decoders, model.ending):
+    """Re-enable gradients for all spatial parameters and remove the eval() patch."""
+    for module in _spatial_modules(model):
         for p in module.parameters():
             p.requires_grad_(True)
+
+    model._spatial_frozen = False  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
