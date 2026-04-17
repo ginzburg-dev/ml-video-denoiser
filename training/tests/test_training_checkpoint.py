@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from torch.optim import AdamW
 
-from models import NAFNetConfig, NAFNetTemporal
+from models import NAFNetConfig, NAFNetTemporal, freeze_spatial
 from training import _load_checkpoint, _save_checkpoint, warmup_cosine_schedule
 
 
@@ -55,3 +55,33 @@ class TestTrainingCheckpoint:
 
         assert start_epoch == 1
         assert best_psnr == 9.0
+
+    def test_load_checkpoint_resets_optimizer_when_trainable_params_change(self, tmp_path: Path) -> None:
+        model = NAFNetTemporal(NAFNetConfig.tiny(), num_frames=5, use_warp=False)
+        freeze_spatial(model)
+        optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-3)
+        scheduler = warmup_cosine_schedule(optimizer, warmup_epochs=1, total_epochs=4)
+        ckpt_path = tmp_path / "stage2_best.pth"
+        _save_checkpoint(ckpt_path, model, optimizer, scheduler, epoch=59, best_psnr=38.78)
+
+        model2 = NAFNetTemporal(NAFNetConfig.tiny(), num_frames=5, use_warp=False)
+        optimizer2 = AdamW([p for p in model2.parameters() if p.requires_grad], lr=5e-4)
+        scheduler2 = warmup_cosine_schedule(optimizer2, warmup_epochs=1, total_epochs=4)
+
+        expected_state = {
+            name: tensor.detach().clone()
+            for name, tensor in model.state_dict().items()
+        }
+
+        start_epoch, best_psnr = _load_checkpoint(
+            ckpt_path,
+            model2,
+            optimizer2,
+            scheduler2,
+            device=torch.device("cpu"),
+        )
+
+        assert start_epoch == 0
+        assert best_psnr == 0.0
+        for name, tensor in model2.state_dict().items():
+            assert torch.equal(tensor, expected_state[name])

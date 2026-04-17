@@ -196,7 +196,15 @@ def _load_checkpoint(
 ) -> tuple[int, float]:
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    try:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    except ValueError as exc:
+        print(
+            f"Warning: optimizer state from {path} is incompatible with the current "
+            "trainable parameter set; starting a fresh optimizer/scheduler for this run. "
+            f"Original error: {exc}"
+        )
+        return 0, 0.0
     scheduler_state = ckpt.get("scheduler_state_dict")
     if scheduler_state is not None:
         scheduler.load_state_dict(scheduler_state)
