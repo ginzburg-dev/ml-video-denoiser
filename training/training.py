@@ -825,6 +825,7 @@ def _config_summary_lines(
     *,
     is_temporal: bool,
     naf_base: Optional[int] = None,
+    naf_size: Optional[str] = None,
     random_temporal_windows: bool,
     windows_per_sequence: Optional[int],
     frames_per_sequence: Optional[int] = None,
@@ -840,7 +841,7 @@ def _config_summary_lines(
     """Return human-readable startup lines for sampling and validation config."""
     lines: list[str] = []
 
-    label = f"base={naf_base}" if naf_base is not None else "preset"
+    label = f"{naf_size}, base={naf_base}" if naf_size else f"base={naf_base}" if naf_base is not None else "?"
     if is_temporal:
         lines.append(f"Architecture: NAFNet temporal ({label})")
     else:
@@ -1091,7 +1092,8 @@ def main() -> None:
 
     for line in _config_summary_lines(
         is_temporal=is_temporal,
-        naf_base=args.naf_base,
+        naf_base=naf_config.base_channels,
+        naf_size=args.size,
         random_temporal_windows=random_temporal_windows,
         windows_per_sequence=windows_per_sequence,
         frames_per_sequence=frames_per_sequence,
