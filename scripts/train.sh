@@ -56,7 +56,7 @@ STAGE2_EPOCHS="${STAGE2_EPOCHS:-120}"  # more epochs needed at lower LR
 STAGE3_EPOCHS="${STAGE3_EPOCHS:-100}"
 
 SPATIAL_LR="${SPATIAL_LR:-1e-4}"
-STAGE2_LR="${STAGE2_LR:-3e-5}"   # low — temporal_mix is only 174K params
+STAGE2_LR="${STAGE2_LR:-5e-5}"   # low — temporal_mix is only 174K params
 STAGE3_LR="${STAGE3_LR:-5e-5}"
 
 SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"

@@ -559,8 +559,9 @@ class NAFNetTemporal(nn.Module):
     Architecture:
         1. Shared ``intro`` conv + per-level NAFBlock encoder applied to all
            T frames as a batch (B×T, C, H, W).
-        2. Per-level temporal mixing: mean of neighbour skip features
-           concatenated with the reference skip, projected back via 1×1 conv.
+        2. Per-level temporal mixing: mean of neighbour skip features 
+           concatenated with the reference skip, fused by a 1×1 channel mixer 
+           followed by a NAFBlock for spatial / channel-attention context.
         3. Optional learned warp (``use_warp=True``): per-level offset heads —
            Conv2d(2C, 2, 1) → bilinear grid_sample.
         4. NAFBlock bottleneck on the reference frame's deepest features only.
@@ -598,7 +599,7 @@ class NAFNetTemporal(nn.Module):
     ) -> "NAFNetTemporal":
         """Create a NAFNetTemporal pre-loaded with weights from a NAFNet checkpoint.
 
-        Temporal components (``temporal_mix``, ``offset_heads``) keep their
+        Temporal components ((1×1 identity + zero-scaled NAFBlock)) keep their
         identity initialisations; the spatial backbone is warm-started.
 
         Args:
@@ -676,8 +677,11 @@ class NAFNetTemporal(nn.Module):
                 self.offset_heads.append(head)
 
         # --- Per-level temporal mixing ---
-        # Input: cat([ref_skip, neigh_mean]) → skip_ch (1×1 conv).
-        # Identity init: ref slice is eye, neighbour slice is zero.
+        # Per level: Conv2d(2C → C, 1×1)  →  NAFBlock(C).
+        # 1×1 conv is identity-init on the reference slice, zero on the
+        # neighbour slice; NAFBlock has β = γ = 0 so it is identity at init.
+        # Together, the fused skip equals ref_skip at epoch 0 → the stage-1
+        # spatial warm-start is preserved.
         self.temporal_mix = nn.ModuleList()
         for skip_ch in enc_channels:
             conv = nn.Conv2d(2 * skip_ch, skip_ch, kernel_size=1, bias=True)
@@ -685,7 +689,8 @@ class NAFNetTemporal(nn.Module):
             nn.init.zeros_(conv.bias)
             for c in range(skip_ch):
                 conv.weight.data[c, c, 0, 0] = 1.0
-            self.temporal_mix.append(conv)
+            block = NAFBlock(skip_ch, **kw)
+            self.temporal_mix.append(nn.Sequential(conv, block))
 
     def forward(self, clip: Tensor) -> Tensor:
         """Denoise the centre frame of *clip*.
