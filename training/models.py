@@ -251,7 +251,7 @@ def load_spatial_weights(model: "NAFNetTemporal", path: "Path | str") -> int:
     """Transfer matching spatial-backbone tensors from a spatial checkpoint into a temporal model.
 
     Key matching is done by name and shape — temporal-only keys
-    (``temporal_mix``, ``offset_heads``) are silently skipped.
+    (``temporal_mix``, ``bottleneck_mix``, ``offset_heads``) are silently skipped.
 
     Args:
         model: A ``NAFNetTemporal`` instance to update in-place.
@@ -559,12 +559,16 @@ class NAFNetTemporal(nn.Module):
     Architecture:
         1. Shared ``intro`` conv + per-level NAFBlock encoder applied to all
            T frames as a batch (B×T, C, H, W).
-        2. Per-level temporal mixing: mean of neighbour skip features 
-           concatenated with the reference skip, fused by a 1×1 channel mixer 
-           followed by a NAFBlock for spatial / channel-attention context.
+        2. Per-level temporal mixing: mean of neighbour skip features
+           concatenated with the reference skip, fused by a 1×1 channel mixer
+           followed by ``n_mix_blocks`` NAFBlocks for spatial / channel-attention
+           context (Conv + 2×NAFBlock stack per level).
         3. Optional learned warp (``use_warp=True``): per-level offset heads —
            Conv2d(2C, 2, 1) → bilinear grid_sample.
-        4. NAFBlock bottleneck on the reference frame's deepest features only.
+        4. Bottleneck temporal fusion via ``bottleneck_mix``: neighbour deep
+           features are averaged, concatenated with the reference frame's deepest
+           features, and passed through a 1×1 conv (identity-init on ref slice)
+           followed by ``n_mix_blocks`` NAFBlocks before entering ``self.middle``.
         5. Shared NAFBlock decoder with **additive** temporal skip connections
            (NAFNet style — no channel concat, no extra merge conv).
         6. Zero-init ``ending`` conv — predicted residual ≈ 0 at epoch 0.
@@ -586,7 +590,7 @@ class NAFNetTemporal(nn.Module):
 
         # Two-stage training from a NAFNet checkpoint:
         model = NAFNetTemporal.from_spatial("checkpoints/spatial_naf/best.pth")
-        freeze_spatial(model)    # train temporal_mix only in stage 2
+        freeze_spatial(model)    # train temporal_mix + bottleneck_mix in stage 2
     """
 
     @classmethod
@@ -635,6 +639,7 @@ class NAFNetTemporal(nn.Module):
             "ffn_expand": cfg.ffn_expand,
             "drop_out_rate": cfg.drop_out_rate,
         }
+        n_mix_blocks = 2
 
         # --- Shared spatial backbone (mirrors NAFNet key-for-key) ---
         self.intro = nn.Conv2d(cfg.in_channels, cfg.base_channels, kernel_size=3, padding=1, bias=True)
@@ -651,6 +656,17 @@ class NAFNetTemporal(nn.Module):
             ch *= 2
 
         self._enc_channels = enc_channels
+
+        # --- Bottleneck temporal fusion (ref ∥ neighbour_mean → ch) ---
+        # Identity-init: first ch columns = eye, last ch columns = 0 →
+        # output equals ref_deep at epoch 0, preserving the spatial warm-start.
+        self._bottleneck_channels = ch
+        bn_conv = nn.Conv2d(2 * ch, ch, kernel_size=1, bias=True)
+        nn.init.zeros_(bn_conv.weight)
+        nn.init.zeros_(bn_conv.bias)
+        for c in range(ch):
+            bn_conv.weight.data[c, c, 0, 0] = 1.0
+        self.bottleneck_mix = nn.Sequential(bn_conv, *[NAFBlock(ch, **kw) for _ in range(n_mix_blocks)])
 
         self.middle = nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(cfg.middle_blocks)])
 
@@ -677,9 +693,9 @@ class NAFNetTemporal(nn.Module):
                 self.offset_heads.append(head)
 
         # --- Per-level temporal mixing ---
-        # Per level: Conv2d(2C → C, 1×1)  →  NAFBlock(C).
+        # Per level: Conv2d(2C → C, 1×1)  →  n_mix_blocks × NAFBlock(C).
         # 1×1 conv is identity-init on the reference slice, zero on the
-        # neighbour slice; NAFBlock has β = γ = 0 so it is identity at init.
+        # neighbour slice; each NAFBlock has β = γ = 0 so it is identity at init.
         # Together, the fused skip equals ref_skip at epoch 0 → the stage-1
         # spatial warm-start is preserved.
         self.temporal_mix = nn.ModuleList()
@@ -689,8 +705,7 @@ class NAFNetTemporal(nn.Module):
             nn.init.zeros_(conv.bias)
             for c in range(skip_ch):
                 conv.weight.data[c, c, 0, 0] = 1.0
-            block = NAFBlock(skip_ch, **kw)
-            self.temporal_mix.append(nn.Sequential(conv, block))
+            self.temporal_mix.append(nn.Sequential(conv, *[NAFBlock(skip_ch, **kw) for _ in range(n_mix_blocks)]))
 
     def forward(self, clip: Tensor) -> Tensor:
         """Denoise the centre frame of *clip*.
@@ -731,9 +746,14 @@ class NAFNetTemporal(nn.Module):
             all_skips.append([skip_bt[:, i] for i in range(t)])
             x = down(x)
 
-        # --- Bottleneck on reference frame only ---
+        # --- Bottleneck: fuse ref and neighbour deep features, then process ---
         _, cp, hp, wp = x.shape
-        ref_deep = x.view(b, t, cp, hp, wp)[:, self._ref_idx]
+        deep_frames = x.view(b, t, cp, hp, wp)
+        ref_deep = deep_frames[:, self._ref_idx]
+        neigh_deep = torch.stack(
+            [deep_frames[:, i] for i in range(t) if i != self._ref_idx], dim=0
+        ).mean(dim=0)
+        ref_deep = self.bottleneck_mix(torch.cat([ref_deep, neigh_deep], dim=1))
         x = self.middle(ref_deep)
 
         # --- Per-level temporal mixing (with optional learned warp) ---
