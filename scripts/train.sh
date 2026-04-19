@@ -48,20 +48,24 @@ STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/temporal_${SIZE}_stage3}"
 # Hyperparameters
 # ---------------------------------------------------------------------------
 WORKERS="${WORKERS:-12}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
 PATCH_SIZE="${PATCH_SIZE:-128}"
 
 SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-150}"
-STAGE2_EPOCHS="${STAGE2_EPOCHS:-120}"  # more epochs needed at lower LR
-STAGE3_EPOCHS="${STAGE3_EPOCHS:-100}"
+STAGE2_EPOCHS="${STAGE2_EPOCHS:-300}"  # more epochs needed at lower LR
+STAGE3_EPOCHS="${STAGE3_EPOCHS:-250}"
 
 SPATIAL_LR="${SPATIAL_LR:-1e-4}"
-STAGE2_LR="${STAGE2_LR:-5e-5}"   # low — temporal_mix is only 174K params
-STAGE3_LR="${STAGE3_LR:-5e-5}"
+STAGE2_LR="${STAGE2_LR:-7e-5}"   # low — temporal_mix is only 174K params
+STAGE3_LR="${STAGE3_LR:-2e-5}"
 
 SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"
 STAGE2_LOSS="${STAGE2_LOSS:-l1}"  # --color-space log already handles HDR range
 STAGE3_LOSS="${STAGE3_LOSS:-l1}"
+
+SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-cosine}"
+STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-cosine}"
+STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-cosine}"
 
 SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-10}"
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
@@ -99,7 +103,7 @@ else
     --size "$SIZE" \
     --color-space log \
     --loss "$SPATIAL_LOSS" \
-    --scheduler plateau \
+    --scheduler "$SPATIAL_SCHEDULER" \
     --lr "$SPATIAL_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
@@ -131,7 +135,7 @@ uv run python training.py \
   --num-frames "$NUM_FRAMES" \
   --color-space log \
   --loss "$STAGE2_LOSS" \
-  --scheduler plateau \
+  --scheduler "$STAGE2_SCHEDULER" \
   --lr "$STAGE2_LR" \
   --batch-size "$BATCH_SIZE" \
   --patch-size "$PATCH_SIZE" \
@@ -172,7 +176,7 @@ uv run python training.py \
   --num-frames "$NUM_FRAMES" \
   --color-space log \
   --loss "$STAGE3_LOSS" \
-  --scheduler plateau \
+  --scheduler "$STAGE3_SCHEDULER" \
   --lr "$STAGE3_LR" \
   --batch-size "$BATCH_SIZE" \
   --patch-size "$PATCH_SIZE" \
