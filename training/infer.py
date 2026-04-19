@@ -413,13 +413,27 @@ def main() -> None:
             model = build_model_from_metadata(metadata)
         except (KeyError, TypeError, ValueError) as exc:
             parser.error(f"Checkpoint model metadata is invalid: {exc}")
+        _model_type = metadata["model_type"]
+        if _model_type in ("spatial", "temporal"):
+            _base_ch = metadata["naf_config"]["base_channels"]
+        elif _model_type == "cascade":
+            _base_ch = metadata["spatial_config"]["base_channels"]
+        elif _model_type == "refined_temporal":
+            _base_ch = metadata["base_metadata"]["naf_config"]["base_channels"]
+        else:
+            _base_ch = "?"
         print(
             "Loaded model metadata from checkpoint: "
-            f"type={metadata['model_type']}, "
-            f"base_channels={metadata['naf_config']['base_channels']}"
+            f"type={_model_type}, "
+            f"base_channels={_base_ch}"
             + (
                 f", num_frames={metadata['num_frames']}, use_warp={metadata.get('use_warp', False)}"
-                if metadata["model_type"] == "temporal"
+                if _model_type == "temporal"
+                else ""
+            )
+            + (
+                f", num_frames={metadata['num_frames']}"
+                if _model_type in ("cascade", "refined_temporal")
                 else ""
             )
             + f", color_space={color_space}"
@@ -487,7 +501,7 @@ def main() -> None:
     use_amp = not args.no_amp
     psnr_values, ssim_values = [], []
 
-    if model_type == "temporal":
+    if model_type in ("temporal", "refined_temporal", "cascade"):
         if args.tile > 0:
             parser.error("--tile is not supported for temporal inference.")
         noisy_paths = [noisy_path for noisy_path, _ in pairs]
