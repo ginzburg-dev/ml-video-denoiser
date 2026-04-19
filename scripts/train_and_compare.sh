@@ -46,17 +46,17 @@ TEMPORAL_BASE="${TEMPORAL_BASE:-32}"
 # ---------------------------------------------------------------------------
 # Input weights (outputs of train.sh)
 # ---------------------------------------------------------------------------
-SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$ROOT_DIR/checkpoints/spatial_${SIZE}/best.pth}"
-AB_WEIGHTS="${AB_WEIGHTS:-$ROOT_DIR/checkpoints/temporal_${SIZE}_stage2_v2/best.pth}"
+SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$ROOT_DIR/training/checkpoints/spatial_${SIZE}/best.pth}"
+AB_WEIGHTS="${AB_WEIGHTS:-$ROOT_DIR/training/checkpoints/temporal_${SIZE}_stage2_v2/best.pth}"
 
 # ---------------------------------------------------------------------------
 # Output paths
 # ---------------------------------------------------------------------------
-REFINER_STAGE4_OUTPUT="${REFINER_STAGE4_OUTPUT:-$ROOT_DIR/checkpoints/refiner_${SIZE}_stage4}"
-REFINER_STAGE5_OUTPUT="${REFINER_STAGE5_OUTPUT:-$ROOT_DIR/checkpoints/refiner_${SIZE}_stage5}"
-CASCADE_STAGE2_OUTPUT="${CASCADE_STAGE2_OUTPUT:-$ROOT_DIR/checkpoints/cascade_${SIZE}_stage2}"
-CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/checkpoints/cascade_${SIZE}_stage3}"
-COMPARE_OUTPUT="${COMPARE_OUTPUT:-$ROOT_DIR/comparisons/${SIZE}}"
+REFINER_STAGE4_OUTPUT="${REFINER_STAGE4_OUTPUT:-$ROOT_DIR/training/checkpoints/refiner_${SIZE}_stage4}"
+REFINER_STAGE5_OUTPUT="${REFINER_STAGE5_OUTPUT:-$ROOT_DIR/training/checkpoints/refiner_${SIZE}_stage5}"
+CASCADE_STAGE2_OUTPUT="${CASCADE_STAGE2_OUTPUT:-$ROOT_DIR/training/checkpoints/cascade_${SIZE}_stage2}"
+CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/training/checkpoints/cascade_${SIZE}_stage3}"
+COMPARE_OUTPUT="${COMPARE_OUTPUT:-$ROOT_DIR/training/comparisons/${SIZE}}"
 
 # ---------------------------------------------------------------------------
 # Shared data loader settings
