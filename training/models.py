@@ -791,6 +791,19 @@ def validate_temporal_num_frames(num_frames: int) -> None:
 
 def get_model_metadata(model: nn.Module) -> dict:
     """Extract enough metadata to rebuild *model* from a checkpoint."""
+    # Delayed imports avoid circular dependencies (refiner/cascade import models).
+    try:
+        from refiner_model import NAFNetRefinedTemporal, get_refined_temporal_metadata
+        if isinstance(model, NAFNetRefinedTemporal):
+            return get_refined_temporal_metadata(model)
+    except ImportError:
+        pass
+    try:
+        from cascade_model import NAFNetCascade, get_cascade_metadata
+        if isinstance(model, NAFNetCascade):
+            return get_cascade_metadata(model)
+    except ImportError:
+        pass
     if isinstance(model, NAFNetTemporal):
         return {
             "model_type": "temporal",
@@ -808,14 +821,21 @@ def get_model_metadata(model: nn.Module) -> dict:
 
 def build_model_from_metadata(metadata: dict) -> nn.Module:
     """Rebuild a NAFNet model from checkpoint metadata."""
-    cfg = NAFNetConfig.from_dict(metadata["naf_config"])
     model_type = metadata["model_type"]
     if model_type == "spatial":
+        cfg = NAFNetConfig.from_dict(metadata["naf_config"])
         return NAFNet(cfg)
     if model_type == "temporal":
+        cfg = NAFNetConfig.from_dict(metadata["naf_config"])
         return NAFNetTemporal(
             cfg,
             num_frames=metadata["num_frames"],
             use_warp=metadata.get("use_warp", False),
         )
+    if model_type == "refined_temporal":
+        from refiner_model import build_refined_temporal_from_metadata
+        return build_refined_temporal_from_metadata(metadata)
+    if model_type == "cascade":
+        from cascade_model import build_cascade_from_metadata
+        return build_cascade_from_metadata(metadata)
     raise ValueError(f"Unsupported model_type in checkpoint metadata: {model_type!r}")

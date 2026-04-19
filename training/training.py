@@ -92,6 +92,9 @@ from models import (
     load_spatial_weights,
     validate_temporal_num_frames,
 )
+
+# All model types that expect (B, T, C, H, W) clip inputs.
+TEMPORAL_MODEL_TYPES: frozenset[str] = frozenset({"temporal", "refined_temporal", "cascade"})
 from noise_generators import (
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
@@ -572,7 +575,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
-    parser.add_argument("--model", choices=["spatial", "temporal"], default="spatial")
+    parser.add_argument(
+        "--model",
+        choices=["spatial", "temporal", "refined_temporal", "cascade"],
+        default="spatial",
+    )
     parser.add_argument("--naf-base", type=int, default=32, metavar="C",
                         help="Base channel count for NAFNet residual/temporal models (default: 32).  "
                              "Overrides the selected preset base_channels when both are given.")
@@ -594,12 +601,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Same as --frames-per-sequence but applied to the validation dataset. "
                              "Requires --model spatial and validation data.")
     parser.add_argument("--spatial-weights", default=None, metavar="PATH",
-                        help="Load a matching spatial checkpoint into the temporal model before training. "
-                             "Requires --model temporal.")
+                        help="Load a matching spatial checkpoint into the temporal or cascade model. "
+                             "Requires --model temporal or --model cascade.")
     parser.add_argument("--freeze-spatial", action="store_true",
-                        help="Freeze spatial layers (encoders, bottleneck, decoders, head) — "
-                             "only temporal_mix and offset_heads receive gradients. "
-                             "Requires --model temporal.")
+                        help="Freeze spatial layers — only temporal components receive gradients. "
+                             "Requires --model temporal or --model cascade.")
+    parser.add_argument("--base-weights", default=None, metavar="PATH",
+                        help="Load a trained NAFNetTemporal checkpoint as the base for "
+                             "refined_temporal. Requires --model refined_temporal.")
+    parser.add_argument("--freeze-base", action="store_true",
+                        help="Freeze the NAFNetTemporal base — only the refiner receives gradients. "
+                             "Requires --model refined_temporal.")
+    parser.add_argument("--refiner-base-channels", type=int, default=16, metavar="C",
+                        help="base_channels for the refiner NAFNet (default: 16). "
+                             "Requires --model refined_temporal.")
+    parser.add_argument("--temporal-base", type=int, default=32, metavar="C",
+                        help="base_channels for cascade temporal_stage NAFNet (default: 32). "
+                             "Requires --model cascade.")
     # Synthetic (clean-only) data
     parser.add_argument("--data", nargs="+", default=None, metavar="DIR",
                         help="Directory(ies) of clean images for synthetic noise training.")
@@ -751,8 +769,10 @@ def _temporal_sampling_config(
     if windows_per_sequence is not None and windows_per_sequence <= 0:
         parser.error("--windows-per-sequence must be a positive integer.")
 
-    if random_windows and args.model != "temporal":
-        parser.error("--random-temporal-windows and --windows-per-sequence require --model temporal.")
+    if random_windows and args.model not in TEMPORAL_MODEL_TYPES:
+        parser.error(
+            "--random-temporal-windows and --windows-per-sequence require a temporal --model."
+        )
 
     if random_windows and windows_per_sequence is None:
         windows_per_sequence = 1
@@ -792,8 +812,8 @@ def _validation_temporal_config(
     if args.val_windows_per_sequence is not None:
         if args.val_windows_per_sequence <= 0:
             parser.error("--val-windows-per-sequence must be a positive integer.")
-        if args.model != "temporal":
-            parser.error("--val-windows-per-sequence requires --model temporal.")
+        if args.model not in TEMPORAL_MODEL_TYPES:
+            parser.error("--val-windows-per-sequence requires a temporal --model.")
         if val_mode is None:
             parser.error("--val-windows-per-sequence requires validation data.")
     if args.val_grid_size <= 0:
@@ -805,8 +825,8 @@ def _temporal_model_config(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
 ) -> int:
-    """Validate the temporal window size when the temporal model is selected."""
-    if args.model == "temporal":
+    """Validate the temporal window size when a temporal model is selected."""
+    if args.model in TEMPORAL_MODEL_TYPES:
         try:
             validate_temporal_num_frames(args.num_frames)
         except ValueError as exc:
@@ -958,7 +978,7 @@ def main() -> None:
 
     noise_gen = _make_noise_generator(args, parser)
 
-    is_temporal = args.model == "temporal"
+    is_temporal = args.model in TEMPORAL_MODEL_TYPES
 
     # ------------------------------------------------------------------
     # Build training dataset
@@ -1063,25 +1083,60 @@ def main() -> None:
         val_clean_dirs, val_noisy_dirs = val_sources
         val_ds = _make_paired_ds(val_clean_dirs, val_noisy_dirs, for_validation=True)
 
-    if args.spatial_weights and not is_temporal:
-        parser.error("--spatial-weights requires --model temporal.")
-    if args.freeze_spatial and not is_temporal:
-        parser.error("--freeze-spatial requires --model temporal.")
+    if args.spatial_weights and args.model not in {"temporal", "cascade"}:
+        parser.error("--spatial-weights requires --model temporal or --model cascade.")
+    if args.freeze_spatial and args.model not in {"temporal", "cascade"}:
+        parser.error("--freeze-spatial requires --model temporal or --model cascade.")
+    if args.base_weights and args.model != "refined_temporal":
+        parser.error("--base-weights requires --model refined_temporal.")
+    if args.freeze_base and args.model != "refined_temporal":
+        parser.error("--freeze-base requires --model refined_temporal.")
 
-    if is_temporal:
+    if args.model == "temporal":
         model_instance = NAFNetTemporal(naf_config, num_frames=args.num_frames, use_warp=args.use_warp)
+        if args.spatial_weights:
+            n = load_spatial_weights(model_instance, args.spatial_weights)
+            print(f"Loaded {n} spatial weight tensors from {args.spatial_weights}")
+        if args.freeze_spatial:
+            freeze_spatial(model_instance)
+
+    elif args.model == "refined_temporal":
+        from refiner_model import NAFNetRefinedTemporal, load_base_weights
+        base = NAFNetTemporal(naf_config, num_frames=args.num_frames, use_warp=args.use_warp)
+        model_instance = NAFNetRefinedTemporal(
+            base_model=base,
+            refiner_base_channels=args.refiner_base_channels,
+        )
+        if args.base_weights:
+            n = load_base_weights(model_instance, args.base_weights)
+            print(f"Loaded {n} tensors into base from {args.base_weights}")
+        if args.freeze_base:
+            model_instance.freeze_base()
+
+    elif args.model == "cascade":
+        from cascade_model import NAFNetCascade
+        model_instance = NAFNetCascade(
+            spatial_config=naf_config,
+            num_frames=args.num_frames,
+            temporal_base=args.temporal_base,
+        )
+        if args.spatial_weights:
+            n = model_instance.load_spatial_stage(args.spatial_weights)
+            print(f"Loaded {n} spatial weight tensors from {args.spatial_weights}")
+        if args.freeze_spatial:
+            model_instance.freeze_spatial_stage()
+
     else:
         model_instance = NAFNet(naf_config)
 
-    if args.spatial_weights:
-        n = load_spatial_weights(model_instance, args.spatial_weights)
-        print(f"Loaded {n} spatial weight tensors from {args.spatial_weights}")
-
-    if args.freeze_spatial:
-        freeze_spatial(model_instance)
+    if args.freeze_spatial and args.model in {"temporal", "cascade"}:
         n_trainable = sum(p.numel() for p in model_instance.parameters() if p.requires_grad)
         n_frozen    = sum(p.numel() for p in model_instance.parameters() if not p.requires_grad)
-        print(f"Spatial layers frozen.  Trainable params: {n_trainable:,}  Frozen: {n_frozen:,}")
+        print(f"Spatial stage frozen.  Trainable params: {n_trainable:,}  Frozen: {n_frozen:,}")
+    if args.freeze_base:
+        n_trainable = sum(p.numel() for p in model_instance.parameters() if p.requires_grad)
+        n_frozen    = sum(p.numel() for p in model_instance.parameters() if not p.requires_grad)
+        print(f"Base frozen.  Trainable params: {n_trainable:,}  Frozen: {n_frozen:,}")
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
