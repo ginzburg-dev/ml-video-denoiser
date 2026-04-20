@@ -76,7 +76,7 @@ class NAFNetCascade(nn.Module):
         spatial_config: Optional[NAFNetConfig] = None,
         temporal_config: Optional[NAFNetConfig] = None,
         num_frames: int = 3,
-        temporal_base: int = 32,
+        temporal_base: int = 64,
     ) -> None:
         super().__init__()
         validate_temporal_num_frames(num_frames)

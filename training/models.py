@@ -657,15 +657,15 @@ class NAFNetTemporal(nn.Module):
 
         self._enc_channels = enc_channels
 
-        # --- Bottleneck temporal fusion (ref ∥ neighbour_mean → ch) ---
-        # Identity-init: first ch columns = eye, last ch columns = 0 →
+        # --- Bottleneck temporal fusion (all T frames concatenated → ch) ---
+        # Identity-init: the ref_idx block of columns = eye, all other blocks = 0 →
         # output equals ref_deep at epoch 0, preserving the spatial warm-start.
         self._bottleneck_channels = ch
-        bn_conv = nn.Conv2d(2 * ch, ch, kernel_size=1, bias=True)
+        bn_conv = nn.Conv2d(num_frames * ch, ch, kernel_size=1, bias=True)
         nn.init.zeros_(bn_conv.weight)
         nn.init.zeros_(bn_conv.bias)
         for c in range(ch):
-            bn_conv.weight.data[c, c, 0, 0] = 1.0
+            bn_conv.weight.data[c, self._ref_idx * ch + c, 0, 0] = 1.0
         self.bottleneck_mix = nn.Sequential(bn_conv, *[NAFBlock(ch, **kw) for _ in range(n_mix_blocks)])
 
         self.middle = nn.Sequential(*[NAFBlock(ch, **kw) for _ in range(cfg.middle_blocks)])
@@ -693,18 +693,20 @@ class NAFNetTemporal(nn.Module):
                 self.offset_heads.append(head)
 
         # --- Per-level temporal mixing ---
-        # Per level: Conv2d(2C → C, 1×1)  →  n_mix_blocks × NAFBlock(C).
-        # 1×1 conv is identity-init on the reference slice, zero on the
-        # neighbour slice; each NAFBlock has β = γ = 0 so it is identity at init.
+        # Per level: Conv2d(T×C → C, 1×1)  →  n_mix_blocks × NAFBlock(C).
+        # All T frame features are concatenated (no pre-averaging) so the
+        # network can reason about each neighbour independently.
+        # Identity-init: the ref_idx block of input columns = eye, all other
+        # blocks = 0; each NAFBlock has β = γ = 0 so it is identity at init.
         # Together, the fused skip equals ref_skip at epoch 0 → the stage-1
         # spatial warm-start is preserved.
         self.temporal_mix = nn.ModuleList()
         for skip_ch in enc_channels:
-            conv = nn.Conv2d(2 * skip_ch, skip_ch, kernel_size=1, bias=True)
+            conv = nn.Conv2d(num_frames * skip_ch, skip_ch, kernel_size=1, bias=True)
             nn.init.zeros_(conv.weight)
             nn.init.zeros_(conv.bias)
             for c in range(skip_ch):
-                conv.weight.data[c, c, 0, 0] = 1.0
+                conv.weight.data[c, self._ref_idx * skip_ch + c, 0, 0] = 1.0
             self.temporal_mix.append(nn.Sequential(conv, *[NAFBlock(skip_ch, **kw) for _ in range(n_mix_blocks)]))
 
     def forward(self, clip: Tensor) -> Tensor:
@@ -746,32 +748,29 @@ class NAFNetTemporal(nn.Module):
             all_skips.append([skip_bt[:, i] for i in range(t)])
             x = down(x)
 
-        # --- Bottleneck: fuse ref and neighbour deep features, then process ---
+        # --- Bottleneck: fuse all T deep features individually, then process ---
         _, cp, hp, wp = x.shape
         deep_frames = x.view(b, t, cp, hp, wp)
-        ref_deep = deep_frames[:, self._ref_idx]
-        neigh_deep = torch.stack(
-            [deep_frames[:, i] for i in range(t) if i != self._ref_idx], dim=0
-        ).mean(dim=0)
-        ref_deep = self.bottleneck_mix(torch.cat([ref_deep, neigh_deep], dim=1))
-        x = self.middle(ref_deep)
+        fused_deep = self.bottleneck_mix(
+            torch.cat([deep_frames[:, i] for i in range(t)], dim=1)
+        )
+        x = self.middle(fused_deep)
 
         # --- Per-level temporal mixing (with optional learned warp) ---
         fused_skips: list[Tensor] = []
         for level, mix in enumerate(self.temporal_mix):
-            ref_feat = all_skips[level][self._ref_idx]
-            neigh_feats = [all_skips[level][i] for i in range(t) if i != self._ref_idx]
+            level_feats = list(all_skips[level])  # T tensors, order preserved
 
             if self._use_warp:
+                ref_feat = level_feats[self._ref_idx]
                 offset_head = self.offset_heads[level]
-                warped: list[Tensor] = []
-                for nf in neigh_feats:
-                    offset = offset_head(torch.cat([ref_feat, nf], dim=1))
-                    warped.append(_warp(nf, offset))
-                neigh_feats = warped
+                level_feats = [
+                    level_feats[i] if i == self._ref_idx
+                    else _warp(level_feats[i], offset_head(torch.cat([ref_feat, level_feats[i]], dim=1)))
+                    for i in range(t)
+                ]
 
-            neigh_mean = torch.stack(neigh_feats, dim=0).mean(dim=0)
-            fused_skips.append(mix(torch.cat([ref_feat, neigh_mean], dim=1)))
+            fused_skips.append(mix(torch.cat(level_feats, dim=1)))
 
         # --- Decoder with additive skips (NAFNet style) ---
         for decoder, up, skip in zip(self.decoders, self.ups, reversed(fused_skips)):
