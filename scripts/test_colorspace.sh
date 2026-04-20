@@ -40,13 +40,13 @@ TEMPORAL_PATCH_SIZE="${TEMPORAL_PATCH_SIZE:-96}"
 cd "$TRAINING_DIR"
 
 echo "========================================================"
-echo "  Color space A/B: log vs linear"
+echo "  Color space test: linear"
 echo "  Spatial:  ${SPATIAL_EPOCHS} epochs"
 echo "  Temporal: ${TEMPORAL_EPOCHS} epochs"
-echo "  Results:  checkpoints/cs_test_{log,linear}_*"
+echo "  Results:  checkpoints/cs_test_linear_*"
 echo "========================================================"
 
-for CS in log linear; do
+for CS in linear; do
   SPATIAL_OUT="$ROOT_DIR/training/checkpoints/cs_test_${CS}_spatial"
   TEMPORAL_OUT="$ROOT_DIR/training/checkpoints/cs_test_${CS}_cascade"
 
@@ -110,8 +110,6 @@ echo ""
 echo "========================================================"
 echo "  Done. Compare in TensorBoard:"
 echo "  uv run tensorboard --logdir \\"
-echo "    cs_test_log_spatial:$ROOT_DIR/training/checkpoints/cs_test_log_spatial/runs,\\"
-echo "    cs_test_log_cascade:$ROOT_DIR/training/checkpoints/cs_test_log_cascade/runs,\\"
 echo "    cs_test_linear_spatial:$ROOT_DIR/training/checkpoints/cs_test_linear_spatial/runs,\\"
 echo "    cs_test_linear_cascade:$ROOT_DIR/training/checkpoints/cs_test_linear_cascade/runs"
 echo "========================================================"
