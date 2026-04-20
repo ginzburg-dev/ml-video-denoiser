@@ -258,6 +258,7 @@ def _make_scheduler(
     *,
     warmup_epochs: int,
     total_epochs: int,
+    plateau_patience: int = 10,
 ):
     """Construct the requested LR scheduler."""
     if name == "cosine":
@@ -267,7 +268,7 @@ def _make_scheduler(
             optimizer,
             mode="min",
             factor=0.5,
-            patience=10,
+            patience=plateau_patience,
             min_lr=1e-6,
         )
     if name == "none":
@@ -331,6 +332,8 @@ def train(
     loss_name: str = "noise-weighted-l1",
     color_space: str = "linear",
     scheduler_name: str = "cosine",
+    plateau_patience: int = 10,
+    **kwargs,
 ) -> None:
     """Run the training loop.
 
@@ -366,6 +369,7 @@ def train(
         optimizer,
         warmup_epochs=warmup_epochs,
         total_epochs=epochs,
+        plateau_patience=kwargs.get("plateau_patience", 10),
     )
     criterion = _make_loss(loss_name)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and device.type == "cuda")
@@ -661,6 +665,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["cosine", "plateau", "none"],
         default="cosine",
         help="LR scheduler strategy.",
+    )
+    parser.add_argument(
+        "--plateau-patience",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Epochs without improvement before plateau scheduler drops LR (default: 10).",
     )
     parser.add_argument("--patch-size", type=int, default=128)
     parser.add_argument("--patches-per-image", type=int, default=64)
@@ -1179,6 +1190,7 @@ def main() -> None:
         loss_name=args.loss,
         color_space=args.color_space,
         scheduler_name=args.scheduler,
+        plateau_patience=args.plateau_patience,
     )
 
 

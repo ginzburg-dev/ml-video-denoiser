@@ -40,14 +40,20 @@ from models import NAFNet, NAFNetConfig, validate_temporal_num_frames
 
 
 def _default_temporal_config(num_frames: int, temporal_base: int = 32) -> NAFNetConfig:
-    """NAFNet config for the cascade temporal stage."""
+    """NAFNet config for the cascade temporal stage.
+
+    Matches exp_053 CascadeNAFTemporalDenoiser exactly:
+        base=32  (exp_053 passed base=64 but computed temporal_base = base//2 = 32)
+        middle_blocks=2   (exp_053 middle_blk_num=2)
+        dw_expand=1       (exp_053 NAFBlock defaults, not the spatial exp048 dw_expand=2)
+    """
     return NAFNetConfig(
         in_channels=(num_frames + 1) * 3,  # T denoised frames + raw centre
         base_channels=temporal_base,
         enc_blocks=(1, 1, 1),
-        middle_blocks=1,
+        middle_blocks=2,
         dec_blocks=(1, 1, 1),
-        dw_expand=2,
+        dw_expand=1,
         ffn_expand=2,
     )
 
@@ -76,7 +82,7 @@ class NAFNetCascade(nn.Module):
         spatial_config: Optional[NAFNetConfig] = None,
         temporal_config: Optional[NAFNetConfig] = None,
         num_frames: int = 3,
-        temporal_base: int = 64,
+        temporal_base: int = 32,
     ) -> None:
         super().__init__()
         validate_temporal_num_frames(num_frames)

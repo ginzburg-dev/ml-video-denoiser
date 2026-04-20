@@ -63,8 +63,11 @@ SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"
 STAGE2_LOSS="${STAGE2_LOSS:-l1}"
 STAGE3_LOSS="${STAGE3_LOSS:-l1}"
 
+COLOR_SPACE="${COLOR_SPACE:-linear}"
+
 SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-cosine}"
 STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-plateau}"  # fresh large module — keep LR high until plateau
+STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-7}"
 STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-cosine}"   # polish phase — guaranteed cool-down tail
 
 SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-10}"
@@ -101,7 +104,7 @@ else
   uv run python training.py \
     --model spatial \
     --size "$SIZE" \
-    --color-space log \
+    --color-space "$COLOR_SPACE" \
     --loss "$SPATIAL_LOSS" \
     --scheduler "$SPATIAL_SCHEDULER" \
     --lr "$SPATIAL_LR" \
@@ -133,9 +136,10 @@ uv run python training.py \
   --model temporal \
   --size "$SIZE" \
   --num-frames "$NUM_FRAMES" \
-  --color-space log \
+  --color-space "$COLOR_SPACE" \
   --loss "$STAGE2_LOSS" \
   --scheduler "$STAGE2_SCHEDULER" \
+  --plateau-patience "$STAGE2_PLATEAU_PATIENCE" \
   --lr "$STAGE2_LR" \
   --batch-size "$BATCH_SIZE" \
   --patch-size "$PATCH_SIZE" \
@@ -174,7 +178,7 @@ uv run python training.py \
   --model temporal \
   --size "$SIZE" \
   --num-frames "$NUM_FRAMES" \
-  --color-space log \
+  --color-space "$COLOR_SPACE" \
   --loss "$STAGE3_LOSS" \
   --scheduler "$STAGE3_SCHEDULER" \
   --lr "$STAGE3_LR" \

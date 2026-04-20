@@ -30,7 +30,7 @@ VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 # ---------------------------------------------------------------------------
 SIZE="${SIZE:-exp048}"
 NUM_FRAMES="${NUM_FRAMES:-3}"
-TEMPORAL_BASE="${TEMPORAL_BASE:-64}"   # matches exp_053
+TEMPORAL_BASE="${TEMPORAL_BASE:-32}"   # matches exp_053 (passed base=64 but temporal_base=base//2=32)
 
 # ---------------------------------------------------------------------------
 # Weights + outputs
@@ -46,20 +46,22 @@ CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/training/checkpoints/c
 # ---------------------------------------------------------------------------
 WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
-PATCH_SIZE="${PATCH_SIZE:-128}"
+PATCH_SIZE="${PATCH_SIZE:-96}"            # exp_053 used patch_size=96
 WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-6}"
 VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-1}"
 
-CASCADE_2_EPOCHS="${CASCADE_2_EPOCHS:-250}"
+COLOR_SPACE="${COLOR_SPACE:-linear}"          # exp_053 trained in linear space
+
+CASCADE_2_EPOCHS="${CASCADE_2_EPOCHS:-100}"  # exp_053 used 100 epochs, no stage 3
 CASCADE_2_LR="${CASCADE_2_LR:-1e-4}"
-CASCADE_2_SCHEDULER="${CASCADE_2_SCHEDULER:-plateau}"
+CASCADE_2_SCHEDULER="${CASCADE_2_SCHEDULER:-none}"  # exp_053: constant LR, no decay
 
 CASCADE_3_EPOCHS="${CASCADE_3_EPOCHS:-100}"
 CASCADE_3_LR="${CASCADE_3_LR:-3e-5}"
 CASCADE_3_SCHEDULER="${CASCADE_3_SCHEDULER:-cosine}"
 
 SKIP_CASCADE_2="${SKIP_CASCADE_2:-0}"
-SKIP_CASCADE_3="${SKIP_CASCADE_3:-0}"
+SKIP_CASCADE_3="${SKIP_CASCADE_3:-1}"        # exp_053 had no joint fine-tune
 
 # ---------------------------------------------------------------------------
 _skip() { [[ "$1" == "1" ]] && echo " [SKIP]" || echo ""; }
@@ -89,7 +91,7 @@ else
     --size "$SIZE" \
     --num-frames "$NUM_FRAMES" \
     --temporal-base "$TEMPORAL_BASE" \
-    --color-space log \
+    --color-space "$COLOR_SPACE" \
     --loss l1 \
     --scheduler "$CASCADE_2_SCHEDULER" \
     --lr "$CASCADE_2_LR" \
@@ -122,7 +124,7 @@ else
     --size "$SIZE" \
     --num-frames "$NUM_FRAMES" \
     --temporal-base "$TEMPORAL_BASE" \
-    --color-space log \
+    --color-space "$COLOR_SPACE" \
     --loss l1 \
     --scheduler "$CASCADE_3_SCHEDULER" \
     --lr "$CASCADE_3_LR" \

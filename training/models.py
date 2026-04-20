@@ -11,9 +11,9 @@ NAFNet
 
 NAFNetTemporal
     Multi-frame temporal denoiser using NAFNet blocks (ECCV 2022).
-    Encodes all T frames with a shared NAFNet encoder.  At each scale the
-    reference frame skip features are concatenated with the mean of neighbour
-    features and mixed by a learned 1×1 conv.
+    Encodes all T frames with a shared NAFNet encoder.  At each scale all T
+    frame features are concatenated individually and mixed by a learned 1×1
+    conv (identity-init on the ref_idx slice → spatial model at epoch 0).
 
     Optional learned warp (use_warp=True): before mixing, each neighbour
     feature map is warped to the reference using a per-level offset head —
