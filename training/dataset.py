@@ -173,14 +173,23 @@ def _match_keyed_images(
     missing_noisy = sorted(clean_keys - noisy_keys)
     extra_noisy = sorted(noisy_keys - clean_keys)
     if missing_noisy or extra_noisy:
+        import warnings
         problems: list[str] = []
         if missing_noisy:
-            problems.append(f"missing noisy frames: {', '.join(missing_noisy[:3])}")
+            problems.append(f"missing noisy frames: {', '.join(missing_noisy[:3])}{' ...' if len(missing_noisy) > 3 else ''}")
         if extra_noisy:
-            problems.append(f"unexpected noisy frames: {', '.join(extra_noisy[:3])}")
-        raise ValueError("Frame mismatch between clean and noisy sequences: " + "; ".join(problems))
+            problems.append(f"extra noisy frames (skipped): {', '.join(extra_noisy[:3])}{' ...' if len(extra_noisy) > 3 else ''}")
+        warnings.warn(
+            f"Frame mismatch — using intersection ({len(clean_keys & noisy_keys)} pairs). "
+            + "; ".join(problems),
+            stacklevel=3,
+        )
 
-    return [(clean_by_key[key], noisy_by_key[key]) for key in sorted(clean_keys)]
+    matched_keys = clean_keys & noisy_keys
+    if not matched_keys:
+        raise ValueError("No matched clean/noisy pairs found — check directory paths and naming.")
+
+    return [(clean_by_key[key], noisy_by_key[key]) for key in sorted(matched_keys)]
 
 
 def _load_image(path: Path) -> np.ndarray:
