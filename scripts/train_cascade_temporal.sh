@@ -3,8 +3,8 @@
 #
 # Assumes train.sh stage 1 has already produced spatial weights.
 #
-# Stage 2  Freeze spatial_stage, train temporal_stage  (plateau)
-# Stage 3  Unfreeze all, joint fine-tune               (cosine)
+# Stage 2  Freeze spatial_stage, train temporal_stage  (none — constant LR, matches exp_053)
+# Stage 3  Unfreeze all, joint fine-tune               (plateau, skipped by default)
 #
 # Usage:
 #   ./scripts/train_cascade_temporal.sh
@@ -31,18 +31,20 @@ VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 SIZE="${SIZE:-exp048}"
 NUM_FRAMES="${NUM_FRAMES:-3}"
 TEMPORAL_BASE="${TEMPORAL_BASE:-32}"   # matches exp_053 (passed base=64 but temporal_base=base//2=32)
+EXP_NAME="${EXP_NAME:-}"               # optional experiment tag, e.g. EXP_NAME=run01
 
 # ---------------------------------------------------------------------------
 # Weights + outputs
 # ---------------------------------------------------------------------------
-SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$ROOT_DIR/training/checkpoints/spatial_${SIZE}/best.pth}"
-CASCADE_STAGE2_OUTPUT="${CASCADE_STAGE2_OUTPUT:-$ROOT_DIR/training/checkpoints/cascade_${SIZE}_stage2}"
-CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/training/checkpoints/cascade_${SIZE}_stage3}"
+_sfx="${EXP_NAME:+_$EXP_NAME}"
+SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$ROOT_DIR/training/checkpoints/spatial_${SIZE}${_sfx}/best.pth}"
+CASCADE_STAGE2_OUTPUT="${CASCADE_STAGE2_OUTPUT:-$ROOT_DIR/training/checkpoints/cascade_${SIZE}_stage2${_sfx}}"
+CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/training/checkpoints/cascade_${SIZE}_stage3${_sfx}}"
 
 # ---------------------------------------------------------------------------
 # Hyperparameters
-# Stage 2: plateau — fresh 6M temporal_stage params need sustained hot LR
-# Stage 3: cosine  — polish phase, guaranteed cool-down tail
+# Stage 2: none    — constant LR, matches exp_053
+# Stage 3: plateau — drop LR only when val loss stalls (skipped by default)
 # ---------------------------------------------------------------------------
 WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
@@ -58,7 +60,8 @@ CASCADE_2_SCHEDULER="${CASCADE_2_SCHEDULER:-none}"  # exp_053: constant LR, no d
 
 CASCADE_3_EPOCHS="${CASCADE_3_EPOCHS:-100}"
 CASCADE_3_LR="${CASCADE_3_LR:-3e-5}"
-CASCADE_3_SCHEDULER="${CASCADE_3_SCHEDULER:-cosine}"
+CASCADE_3_SCHEDULER="${CASCADE_3_SCHEDULER:-plateau}"
+CASCADE_3_PLATEAU_PATIENCE="${CASCADE_3_PLATEAU_PATIENCE:-7}"
 
 SKIP_CASCADE_2="${SKIP_CASCADE_2:-0}"
 SKIP_CASCADE_3="${SKIP_CASCADE_3:-1}"        # exp_053 had no joint fine-tune
@@ -70,6 +73,7 @@ cd "$TRAINING_DIR"
 
 echo "========================================================"
 echo "  Cascade temporal training"
+echo "  Experiment: ${EXP_NAME:-<default>}"
 echo "  Spatial: $SPATIAL_WEIGHTS"
 echo "  Stage 2: $CASCADE_STAGE2_OUTPUT  (${CASCADE_2_EPOCHS} ep, LR=${CASCADE_2_LR}, ${CASCADE_2_SCHEDULER})$(_skip "$SKIP_CASCADE_2")"
 echo "  Stage 3: $CASCADE_STAGE3_OUTPUT  (${CASCADE_3_EPOCHS} ep, LR=${CASCADE_3_LR}, ${CASCADE_3_SCHEDULER})$(_skip "$SKIP_CASCADE_3")"
@@ -127,6 +131,7 @@ else
     --color-space "$COLOR_SPACE" \
     --loss l1 \
     --scheduler "$CASCADE_3_SCHEDULER" \
+    --plateau-patience "$CASCADE_3_PLATEAU_PATIENCE" \
     --lr "$CASCADE_3_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \

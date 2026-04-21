@@ -26,6 +26,7 @@ VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 
 SIZE="${SIZE:-exp048}"
 NUM_FRAMES="${NUM_FRAMES:-3}"
+EXP_NAME="${EXP_NAME:-}"        # optional experiment tag, e.g. EXP_NAME=run01
 
 SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-30}"
 TEMPORAL_EPOCHS="${TEMPORAL_EPOCHS:-30}"
@@ -47,8 +48,9 @@ echo "  Results:  checkpoints/cs_test_linear_*"
 echo "========================================================"
 
 for CS in linear; do
-  SPATIAL_OUT="$ROOT_DIR/training/checkpoints/cs_test_${CS}_spatial"
-  TEMPORAL_OUT="$ROOT_DIR/training/checkpoints/cs_test_${CS}_cascade"
+  _sfx="${EXP_NAME:+_$EXP_NAME}"
+  SPATIAL_OUT="$ROOT_DIR/training/checkpoints/cs_test_${CS}_spatial${_sfx}"
+  TEMPORAL_OUT="$ROOT_DIR/training/checkpoints/cs_test_${CS}_cascade${_sfx}"
 
   echo ""
   echo "════════════════════════════════"

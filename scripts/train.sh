@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # train.sh — Full three-stage NAFNet training pipeline.
 #
-# Stage 1  Spatial      NAFNet spatial denoiser
+# Stage 1  Spatial      NAFNet spatial denoiser                    (plateau)
 # Stage 2  Temporal     Load stage-1 weights, freeze spatial, train temporal_mix only
-# Stage 3  Fine-tune    Unfreeze all, joint fine-tune at half LR
+# Stage 3  Fine-tune    Unfreeze all, joint fine-tune at lower LR (plateau)
 #
 # Usage:
 #   ./scripts/train.sh
@@ -35,14 +35,16 @@ VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 # ---------------------------------------------------------------------------
 SIZE="${SIZE:-exp048}"          # tiny | small | exp048 | standard | wide
 NUM_FRAMES="${NUM_FRAMES:-3}"   # temporal window (3 = 1 past + ref + 1 future)
+EXP_NAME="${EXP_NAME:-}"        # optional experiment tag, e.g. EXP_NAME=run01
 
 # ---------------------------------------------------------------------------
 # Output paths
 # ---------------------------------------------------------------------------
-STAGE1_OUTPUT="${STAGE1_OUTPUT:-checkpoints/spatial_${SIZE}}"
+_sfx="${EXP_NAME:+_$EXP_NAME}"
+STAGE1_OUTPUT="${STAGE1_OUTPUT:-checkpoints/spatial_${SIZE}${_sfx}}"
 SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$STAGE1_OUTPUT/best.pth}"
-STAGE2_OUTPUT="${STAGE2_OUTPUT:-checkpoints/temporal_${SIZE}_stage2}"
-STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/temporal_${SIZE}_stage3}"
+STAGE2_OUTPUT="${STAGE2_OUTPUT:-checkpoints/temporal_${SIZE}_stage2${_sfx}}"
+STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/temporal_${SIZE}_stage3${_sfx}}"
 
 # ---------------------------------------------------------------------------
 # Hyperparameters
@@ -65,10 +67,12 @@ STAGE3_LOSS="${STAGE3_LOSS:-l1}"
 
 COLOR_SPACE="${COLOR_SPACE:-linear}"
 
-SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-cosine}"
+SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-plateau}"
+SPATIAL_PLATEAU_PATIENCE="${SPATIAL_PLATEAU_PATIENCE:-7}"
 STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-plateau}"  # fresh large module — keep LR high until plateau
 STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-7}"
-STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-cosine}"   # polish phase — guaranteed cool-down tail
+STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-plateau}"  # polish phase — drop LR only when val loss stalls
+STAGE3_PLATEAU_PATIENCE="${STAGE3_PLATEAU_PATIENCE:-7}"
 
 SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-10}"
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
@@ -87,6 +91,7 @@ echo "========================================================"
 echo "  NAFNet three-stage training"
 echo "  Size:       $SIZE"
 echo "  Num frames: $NUM_FRAMES"
+echo "  Experiment: ${EXP_NAME:-<default>}"
 echo "  Stage 1 output:  $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ "$SKIP_STAGE1" == "1" ] && echo " [SKIP]")"
 echo "  Stage 2 output:  $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ "$SKIP_STAGE2" == "1" ] && echo " [SKIP]")"
 echo "  Stage 3 output:  $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ "$SKIP_STAGE3" == "1" ] && echo " [SKIP]")"
@@ -107,6 +112,7 @@ else
     --color-space "$COLOR_SPACE" \
     --loss "$SPATIAL_LOSS" \
     --scheduler "$SPATIAL_SCHEDULER" \
+    --plateau-patience "$SPATIAL_PLATEAU_PATIENCE" \
     --lr "$SPATIAL_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
@@ -116,8 +122,7 @@ else
     --val-noisy "$VAL_NOISY" \
     --frames-per-sequence "$SPATIAL_FRAMES_PER_SEQUENCE" \
     --val-frames-per-sequence "$SPATIAL_VAL_FRAMES_PER_SEQUENCE" \
-    --val-crop-mode grid \
-    --val-grid-size 3 \
+    --val-crop-mode center \
     --output "$STAGE1_OUTPUT" \
     --workers "$WORKERS" \
     --epochs "$SPATIAL_EPOCHS"
@@ -181,6 +186,7 @@ uv run python training.py \
   --color-space "$COLOR_SPACE" \
   --loss "$STAGE3_LOSS" \
   --scheduler "$STAGE3_SCHEDULER" \
+  --plateau-patience "$STAGE3_PLATEAU_PATIENCE" \
   --lr "$STAGE3_LR" \
   --batch-size "$BATCH_SIZE" \
   --patch-size "$PATCH_SIZE" \
