@@ -394,6 +394,10 @@ def train(
         is_temporal = hasattr(model, "_num_frames")
 
         for epoch in range(start_epoch, epochs):
+            # Resample spatial frames each epoch if dataset supports it
+            if hasattr(loader.dataset, "resample_frames"):
+                loader.dataset.resample_frames()
+
             model.train()
             epoch_loss = 0.0
             epoch_psnr = 0.0
@@ -601,6 +605,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "spread frames from each sequence subdirectory (first, spread, last). "
                              "Requires --model spatial. Flat directories fall back to all images "
                              "with a warning.")
+    parser.add_argument("--random-spatial-frames", action="store_true",
+                        help="When used with --frames-per-sequence, pick N frames randomly per "
+                             "sequence each epoch instead of evenly spreading them. Gives full "
+                             "dataset coverage over many epochs with minimal samples per epoch.")
     parser.add_argument("--val-frames-per-sequence", type=int, default=None, metavar="N",
                         help="Same as --frames-per-sequence but applied to the validation dataset. "
                              "Requires --model spatial and validation data.")
@@ -1040,6 +1048,7 @@ def main() -> None:
                 crop_grid_size=val_grid_size,
             )
         # For spatial: pair each clean/noisy dir entry
+        random_frames = not for_validation and getattr(args, "random_spatial_frames", False)
         if len(clean_dirs) == 1:
             return PairedPatchDataset(
                 clean_dirs[0], noisy_dirs[0],
@@ -1050,6 +1059,7 @@ def main() -> None:
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
                 frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
+                random_frames=random_frames,
             )
         # Multiple paired dirs → combine
         sub_datasets = [
@@ -1062,6 +1072,7 @@ def main() -> None:
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
                 frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
+                random_frames=random_frames,
             )
             for c, n in zip(clean_dirs, noisy_dirs)
         ]

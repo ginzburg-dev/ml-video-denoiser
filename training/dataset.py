@@ -85,12 +85,13 @@ def _spread_indices(n: int, count: int) -> list[int]:
 def _collect_images_spread(
     dirs: Sequence[str | Path],
     frames_per_sequence: Optional[int],
+    random_frames: bool = False,
 ) -> tuple[list[Path], bool]:
     """Collect image files from *dirs*, optionally spread per sequence subdir.
 
     If *frames_per_sequence* is set:
     - Each subdirectory is treated as one sequence; N evenly spread frames
-      are selected from it.
+      are selected from it (or N random frames if *random_frames* is True).
     - Flat directories (no image-containing subdirs) fall back to all images
       with a warning.
 
@@ -120,10 +121,15 @@ def _collect_images_spread(
                 seq_frames.append(frames)
 
         if seq_frames:
-            # Sequence-folder structure: spread N frames per sequence
+            # Sequence-folder structure: spread or randomly sample N frames per sequence
             for frames in seq_frames:
-                indices = _spread_indices(len(frames), frames_per_sequence)
-                paths.extend(frames[i] for i in indices)
+                if random_frames:
+                    k = min(frames_per_sequence, len(frames))
+                    chosen = random.sample(frames, k)
+                    paths.extend(sorted(chosen))
+                else:
+                    indices = _spread_indices(len(frames), frames_per_sequence)
+                    paths.extend(frames[i] for i in indices)
         else:
             # Flat directory — warn and use all images
             flat_imgs = sorted(
@@ -639,20 +645,24 @@ def _match_pairs(
     noisy_dir: Path,
     match_by_name: bool,
     frames_per_sequence: Optional[int] = None,
+    random_frames: bool = False,
 ) -> list[tuple[Path, Path]]:
     """Collect matched (clean, noisy) image path pairs from two directories.
 
     When *frames_per_sequence* is set, N evenly spread frames are selected
     from each sequence subdirectory in *clean_dir*; the matching noisy paths
-    are derived from those same stems/positions.
+    are derived from those same stems/positions.  When *random_frames* is True,
+    frames are sampled randomly instead of evenly spread — call again each epoch
+    to get a fresh random draw.
 
     Args:
         clean_dir: Root directory of clean images (searched recursively).
         noisy_dir: Root directory of noisy images (searched recursively).
         match_by_name: If True, match files whose stems are identical.
             If False, match by sorted position — clean[i] ↔ noisy[i].
-        frames_per_sequence: If set, evenly spread N frames per sequence
-            subdirectory.
+        frames_per_sequence: If set, select N frames per sequence subdirectory.
+        random_frames: If True, pick frames randomly each call instead of
+            evenly spreading them.
 
     Returns:
         Sorted list of (clean_path, noisy_path) pairs.
@@ -660,7 +670,7 @@ def _match_pairs(
     Raises:
         ValueError: If no pairs are found or counts differ (position matching).
     """
-    clean_paths, _ = _collect_images_spread([clean_dir], frames_per_sequence)
+    clean_paths, _ = _collect_images_spread([clean_dir], frames_per_sequence, random_frames)
     noisy_paths = _collect_images([noisy_dir])
 
     if not clean_paths:
@@ -752,9 +762,15 @@ class PairedPatchDataset(Dataset):
         crop_mode: str = "random",
         crop_grid_size: int = 2,
         frames_per_sequence: Optional[int] = None,
+        random_frames: bool = False,
     ) -> None:
+        self._clean_dir = Path(clean_dir)
+        self._noisy_dir = Path(noisy_dir)
+        self._match_by_name = match_by_name
+        self._frames_per_sequence = frames_per_sequence
+        self._random_frames = random_frames
         self._pairs = _match_pairs(
-            Path(clean_dir), Path(noisy_dir), match_by_name, frames_per_sequence
+            self._clean_dir, self._noisy_dir, match_by_name, frames_per_sequence, random_frames
         )
         self._patch_size = patch_size
         self._patches_per_image = patches_per_image
@@ -762,6 +778,15 @@ class PairedPatchDataset(Dataset):
         self._sigma_window = sigma_window
         self._crop_mode = crop_mode
         self._crop_grid_size = crop_grid_size
+
+    def resample_frames(self) -> None:
+        """Resample frames randomly — call at the start of each epoch when
+        *random_frames* is True to get a fresh draw of frames per sequence."""
+        if self._random_frames:
+            self._pairs = _match_pairs(
+                self._clean_dir, self._noisy_dir,
+                self._match_by_name, self._frames_per_sequence, random_frames=True,
+            )
 
     def __len__(self) -> int:
         return len(self._pairs) * self._patches_per_image

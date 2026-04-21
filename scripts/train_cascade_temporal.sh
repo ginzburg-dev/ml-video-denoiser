@@ -3,7 +3,7 @@
 #
 # Assumes train.sh stage 1 has already produced spatial weights.
 #
-# Stage 2  Freeze spatial_stage, train temporal_stage  (none — constant LR, matches exp_053)
+# Stage 2  Freeze spatial_stage, train temporal_stage  (plateau)
 # Stage 3  Unfreeze all, joint fine-tune               (plateau, skipped by default)
 #
 # Usage:
@@ -43,25 +43,26 @@ CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/training/checkpoints/c
 
 # ---------------------------------------------------------------------------
 # Hyperparameters
-# Stage 2: none    — constant LR, matches exp_053
+# Stage 2: plateau — drop LR only when val loss stalls
 # Stage 3: plateau — drop LR only when val loss stalls (skipped by default)
 # ---------------------------------------------------------------------------
 WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 PATCH_SIZE="${PATCH_SIZE:-96}"            # exp_053 used patch_size=96
-WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-6}"
-VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-1}"
+WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-1}"                  # 1 random window/seq/epoch
+VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-3}"
 
 COLOR_SPACE="${COLOR_SPACE:-linear}"          # exp_053 trained in linear space
 
-CASCADE_2_EPOCHS="${CASCADE_2_EPOCHS:-100}"  # exp_053 used 100 epochs, no stage 3
+CASCADE_2_EPOCHS="${CASCADE_2_EPOCHS:-200}"
 CASCADE_2_LR="${CASCADE_2_LR:-1e-4}"
-CASCADE_2_SCHEDULER="${CASCADE_2_SCHEDULER:-none}"  # exp_053: constant LR, no decay
+CASCADE_2_SCHEDULER="${CASCADE_2_SCHEDULER:-plateau}"
+CASCADE_2_PLATEAU_PATIENCE="${CASCADE_2_PLATEAU_PATIENCE:-20}"
 
 CASCADE_3_EPOCHS="${CASCADE_3_EPOCHS:-100}"
 CASCADE_3_LR="${CASCADE_3_LR:-3e-5}"
 CASCADE_3_SCHEDULER="${CASCADE_3_SCHEDULER:-plateau}"
-CASCADE_3_PLATEAU_PATIENCE="${CASCADE_3_PLATEAU_PATIENCE:-7}"
+CASCADE_3_PLATEAU_PATIENCE="${CASCADE_3_PLATEAU_PATIENCE:-20}"
 
 SKIP_CASCADE_2="${SKIP_CASCADE_2:-0}"
 SKIP_CASCADE_3="${SKIP_CASCADE_3:-1}"        # exp_053 had no joint fine-tune
@@ -98,6 +99,7 @@ else
     --color-space "$COLOR_SPACE" \
     --loss l1 \
     --scheduler "$CASCADE_2_SCHEDULER" \
+    --plateau-patience "$CASCADE_2_PLATEAU_PATIENCE" \
     --lr "$CASCADE_2_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
@@ -108,7 +110,8 @@ else
     --random-temporal-windows \
     --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
     --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-    --val-crop-mode center \
+    --val-crop-mode grid \
+    --val-grid-size 3 \
     --spatial-weights "$SPATIAL_WEIGHTS" \
     --freeze-spatial \
     --output "$CASCADE_STAGE2_OUTPUT" \
@@ -142,7 +145,8 @@ else
     --random-temporal-windows \
     --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
     --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-    --val-crop-mode center \
+    --val-crop-mode grid \
+    --val-grid-size 3 \
     --resume "$CASCADE_STAGE2_OUTPUT/best.pth" \
     --output "$CASCADE_STAGE3_OUTPUT" \
     --workers "$WORKERS" \

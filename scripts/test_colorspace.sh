@@ -72,7 +72,8 @@ for CS in linear; do
     --paired-noisy "$PAIRED_NOISY" \
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
-    --frames-per-sequence 10 \
+    --frames-per-sequence 1 \
+    --random-spatial-frames \
     --val-frames-per-sequence 3 \
     --val-crop-mode grid \
     --val-grid-size 3 \
@@ -97,9 +98,10 @@ for CS in linear; do
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
     --random-temporal-windows \
-    --windows-per-sequence 6 \
-    --val-windows-per-sequence 1 \
-    --val-crop-mode center \
+    --windows-per-sequence 1 \
+    --val-windows-per-sequence 3 \
+    --val-crop-mode grid \
+    --val-grid-size 3 \
     --spatial-weights "$SPATIAL_OUT/best.pth" \
     --freeze-spatial \
     --output "$TEMPORAL_OUT" \
