@@ -681,6 +681,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Epochs without improvement before plateau scheduler drops LR (default: 10).",
     )
+    parser.add_argument(
+        "--patches-per-clip",
+        type=int,
+        default=16,
+        metavar="N",
+        help="Random patches extracted per temporal clip per epoch (default: 16).",
+    )
     parser.add_argument("--patch-size", type=int, default=128)
     parser.add_argument("--patches-per-image", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
@@ -1007,7 +1014,7 @@ def main() -> None:
             return VideoSequenceDataset(
                 dirs, noise_generator=noise_gen,
                 num_frames=args.num_frames, patch_size=64,
-                patches_per_clip=val_patch_repeats if for_validation else 16,
+                patches_per_clip=val_patch_repeats if for_validation else args.patches_per_clip,
                 random_windows=random_temporal_windows and not for_validation,
                 windows_per_sequence=(
                     windows_per_sequence if not for_validation else val_windows_per_sequence
@@ -1038,7 +1045,7 @@ def main() -> None:
             return PairedVideoSequenceDataset(
                 clean_dirs, noisy_dirs,
                 num_frames=args.num_frames, patch_size=64,
-                patches_per_clip=val_patch_repeats if for_validation else 16,
+                patches_per_clip=val_patch_repeats if for_validation else args.patches_per_clip,
                 random_windows=random_temporal_windows and not for_validation,
                 windows_per_sequence=(
                     windows_per_sequence if not for_validation else val_windows_per_sequence

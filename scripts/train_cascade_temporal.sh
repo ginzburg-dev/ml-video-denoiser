@@ -49,7 +49,8 @@ CASCADE_STAGE3_OUTPUT="${CASCADE_STAGE3_OUTPUT:-$ROOT_DIR/training/checkpoints/c
 WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 PATCH_SIZE="${PATCH_SIZE:-96}"            # exp_053 used patch_size=96
-WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-1}"                  # 1 random window/seq/epoch
+PATCHES_PER_CLIP="${PATCHES_PER_CLIP:-48}"
+WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-4}"                  # 4 random windows/seq/epoch
 VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-3}"
 
 COLOR_SPACE="${COLOR_SPACE:-linear}"          # exp_053 trained in linear space
@@ -103,6 +104,7 @@ else
     --lr "$CASCADE_2_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
+    --patches-per-clip "$PATCHES_PER_CLIP" \
     --paired-clean "$PAIRED_CLEAN" \
     --paired-noisy "$PAIRED_NOISY" \
     --val-clean "$VAL_CLEAN" \
@@ -138,6 +140,7 @@ else
     --lr "$CASCADE_3_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
+    --patches-per-clip "$PATCHES_PER_CLIP" \
     --paired-clean "$PAIRED_CLEAN" \
     --paired-noisy "$PAIRED_NOISY" \
     --val-clean "$VAL_CLEAN" \

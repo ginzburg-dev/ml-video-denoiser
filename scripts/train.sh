@@ -52,6 +52,7 @@ STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/temporal_${SIZE}_stage3${_sfx}}"
 WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 PATCH_SIZE="${PATCH_SIZE:-128}"
+PATCHES_PER_CLIP="${PATCHES_PER_CLIP:-48}"
 
 SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-150}"
 STAGE2_EPOCHS="${STAGE2_EPOCHS:-250}"
@@ -74,9 +75,9 @@ STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-20}"
 STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-plateau}"  # polish phase — drop LR only when val loss stalls
 STAGE3_PLATEAU_PATIENCE="${STAGE3_PLATEAU_PATIENCE:-20}"
 
-SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-1}"   # 1 random frame/seq/epoch
+SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-5}"   # 5 random frames/seq/epoch
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
-WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-1}"                  # 1 random window/seq/epoch
+WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-4}"                  # 4 random windows/seq/epoch
 VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-3}"
 
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
@@ -150,6 +151,7 @@ uv run python training.py \
   --lr "$STAGE2_LR" \
   --batch-size "$BATCH_SIZE" \
   --patch-size "$PATCH_SIZE" \
+  --patches-per-clip "$PATCHES_PER_CLIP" \
   --paired-clean "$PAIRED_CLEAN" \
   --paired-noisy "$PAIRED_NOISY" \
   --val-clean "$VAL_CLEAN" \
@@ -193,6 +195,7 @@ uv run python training.py \
   --lr "$STAGE3_LR" \
   --batch-size "$BATCH_SIZE" \
   --patch-size "$PATCH_SIZE" \
+  --patches-per-clip "$PATCHES_PER_CLIP" \
   --paired-clean "$PAIRED_CLEAN" \
   --paired-noisy "$PAIRED_NOISY" \
   --val-clean "$VAL_CLEAN" \
