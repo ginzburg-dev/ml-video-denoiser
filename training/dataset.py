@@ -433,7 +433,7 @@ class VideoSequenceDataset(Dataset):
         num_frames: Temporal clip length (default: 3).
         patch_size: Spatial patch size (default: 64 — smaller than spatial
             because memory cost is num_frames ×).
-        patches_per_clip: Virtual patches per clip per epoch (default: 16).
+        patches_per_image: Virtual patches per clip per epoch (default: 64).
         random_windows: If True, sample random temporal windows from each
             sequence each epoch instead of enumerating every sliding window.
         windows_per_sequence: Number of temporal windows to draw per sequence
@@ -451,7 +451,7 @@ class VideoSequenceDataset(Dataset):
         noise_generator: Optional[NoiseGenerator] = None,
         num_frames: int = 3,
         patch_size: int = 64,
-        patches_per_clip: int = 16,
+        patches_per_image: int = 64,
         random_windows: bool = False,
         windows_per_sequence: Optional[int] = None,
         augment: bool = True,
@@ -464,7 +464,7 @@ class VideoSequenceDataset(Dataset):
         self._noise_gen = noise_generator or GaussianNoiseGenerator(0.0, 50.0 / 255.0)
         self._num_frames = num_frames
         self._patch_size = patch_size
-        self._patches_per_clip = patches_per_clip
+        self._patches_per_image = patches_per_image
         self._random_windows = random_windows
         self._windows_per_sequence = windows_per_sequence or 1
         self._augment = augment
@@ -525,10 +525,10 @@ class VideoSequenceDataset(Dataset):
     def _sample_frame_paths(self, idx: int) -> list[Path]:
         """Resolve dataset index to a concrete temporal window."""
         if not self._random_windows:
-            clip_idx = idx // self._patches_per_clip
+            clip_idx = idx // self._patches_per_image
             return self._clips[clip_idx]
 
-        windows_per_sequence = self._windows_per_sequence * self._patches_per_clip
+        windows_per_sequence = self._windows_per_sequence * self._patches_per_image
         sequence_idx = idx // windows_per_sequence
         frames = self._sequences[sequence_idx]
         start = random.randint(0, len(frames) - self._num_frames)
@@ -536,8 +536,8 @@ class VideoSequenceDataset(Dataset):
 
     def __len__(self) -> int:
         if self._random_windows:
-            return self._num_sequences * self._windows_per_sequence * self._patches_per_clip
-        return len(self._clips) * self._patches_per_clip
+            return self._num_sequences * self._windows_per_sequence * self._patches_per_image
+        return len(self._clips) * self._patches_per_image
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         """Return (noisy_clip, clean_clip, sigma_map).
@@ -568,7 +568,7 @@ class VideoSequenceDataset(Dataset):
             left = 0
             ps = None
         elif self._crop_mode == "grid":
-            grid_patch_idx = idx % self._patches_per_clip
+            grid_patch_idx = idx % self._patches_per_image
             row = grid_patch_idx // self._crop_grid_size
             col = grid_patch_idx % self._crop_grid_size
             top = _grid_start(target_h, ps, self._crop_grid_size, row)
@@ -897,7 +897,7 @@ class PairedVideoSequenceDataset(Dataset):
             same number of entries as *clean_sequence_dirs*.
         num_frames: Temporal window length (default: 3).
         patch_size: Spatial patch size (default: 64).
-        patches_per_clip: Virtual patches per clip per epoch (default: 16).
+        patches_per_image: Virtual patches per clip per epoch (default: 64).
         random_windows: If True, sample random temporal windows from each
             paired sequence each epoch instead of enumerating all windows.
         windows_per_sequence: Number of temporal windows to draw per paired
@@ -915,7 +915,7 @@ class PairedVideoSequenceDataset(Dataset):
         noisy_sequence_dirs: Sequence[str | Path],
         num_frames: int = 3,
         patch_size: int = 64,
-        patches_per_clip: int = 16,
+        patches_per_image: int = 64,
         random_windows: bool = False,
         windows_per_sequence: Optional[int] = None,
         augment: bool = True,
@@ -936,7 +936,7 @@ class PairedVideoSequenceDataset(Dataset):
             )
         self._num_frames  = num_frames
         self._patch_size  = patch_size
-        self._patches_per_clip = patches_per_clip
+        self._patches_per_image = patches_per_image
         self._random_windows = random_windows
         self._windows_per_sequence = windows_per_sequence or 1
         self._augment     = augment
@@ -1020,10 +1020,10 @@ class PairedVideoSequenceDataset(Dataset):
     def _sample_frame_paths(self, idx: int) -> tuple[list[Path], list[Path]]:
         """Resolve dataset index to a concrete paired temporal window."""
         if not self._random_windows:
-            clip_idx = idx // self._patches_per_clip
+            clip_idx = idx // self._patches_per_image
             return self._clips[clip_idx]
 
-        windows_per_sequence = self._windows_per_sequence * self._patches_per_clip
+        windows_per_sequence = self._windows_per_sequence * self._patches_per_image
         sequence_idx = idx // windows_per_sequence
         clean_frames, noisy_frames = self._sequences[sequence_idx]
         start = random.randint(0, len(clean_frames) - self._num_frames)
@@ -1032,8 +1032,8 @@ class PairedVideoSequenceDataset(Dataset):
 
     def __len__(self) -> int:
         if self._random_windows:
-            return self._num_sequences * self._windows_per_sequence * self._patches_per_clip
-        return len(self._clips) * self._patches_per_clip
+            return self._num_sequences * self._windows_per_sequence * self._patches_per_image
+        return len(self._clips) * self._patches_per_image
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         """Return (noisy_clip, clean_clip, sigma_map) each shaped (T, C, H, W)."""
@@ -1066,7 +1066,7 @@ class PairedVideoSequenceDataset(Dataset):
             left = 0
             ps = None
         elif self._crop_mode == "grid":
-            grid_patch_idx = idx % self._patches_per_clip
+            grid_patch_idx = idx % self._patches_per_image
             row = grid_patch_idx // self._crop_grid_size
             col = grid_patch_idx % self._crop_grid_size
             top = _grid_start(target_h, ps, self._crop_grid_size, row)
