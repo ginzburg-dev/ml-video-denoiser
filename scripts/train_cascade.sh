@@ -36,7 +36,7 @@ VAL_DATA="${VAL_DATA:-}"
 NOISE="${NOISE:-camera}"   # camera | poisson-gaussian | gaussian
 ISO_MIN="${ISO_MIN:-100}"
 ISO_MAX="${ISO_MAX:-3200}"
-COLOR_SPACE="${COLOR_SPACE:-log}"
+COLOR_SPACE="${COLOR_SPACE:-linear}"
 
 # ---------------------------------------------------------------------------
 # Model / architecture
