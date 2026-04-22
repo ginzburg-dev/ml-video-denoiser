@@ -26,10 +26,10 @@ TRAINING_DIR="$ROOT_DIR/training"
 # ---------------------------------------------------------------------------
 # Data — use paired OR synthetic (set DATA= for synthetic, PAIRED_CLEAN= for paired)
 # ---------------------------------------------------------------------------
-PAIRED_CLEAN="${PAIRED_CLEAN:-}"
-PAIRED_NOISY="${PAIRED_NOISY:-}"
-VAL_CLEAN="${VAL_CLEAN:-}"
-VAL_NOISY="${VAL_NOISY:-}"
+PAIRED_CLEAN="${PAIRED_CLEAN:-$HOME/data/tgb_train/TGB_training/train_clean}"
+PAIRED_NOISY="${PAIRED_NOISY:-$HOME/data/tgb_train/TGB_training/train_noisy}"
+VAL_CLEAN="${VAL_CLEAN:-$HOME/data/tgb_train/TGB_training/val_clean}"
+VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 
 DATA="${DATA:-}"           # clean sequences dir (synthetic noise path)
 VAL_DATA="${VAL_DATA:-}"
