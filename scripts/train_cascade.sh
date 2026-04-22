@@ -26,8 +26,8 @@ TRAINING_DIR="$ROOT_DIR/training"
 # ---------------------------------------------------------------------------
 # Data — use paired OR synthetic (set DATA= for synthetic, PAIRED_CLEAN= for paired)
 # ---------------------------------------------------------------------------
-PAIRED_CLEAN="${PAIRED_CLEAN:-$HOME/data/tgb_train/TGB_training/train_clean}"
-PAIRED_NOISY="${PAIRED_NOISY:-$HOME/data/tgb_train/TGB_training/train_noisy}"
+PAIRED_CLEAN="${PAIRED_CLEAN:-$HOME/data/tgb_train/TGB_training/train_clean_lit}"
+PAIRED_NOISY="${PAIRED_NOISY:-$HOME/data/tgb_train/TGB_training/train_noisy_lit}"
 VAL_CLEAN="${VAL_CLEAN:-$HOME/data/tgb_train/TGB_training/val_clean}"
 VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 
