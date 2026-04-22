@@ -46,6 +46,7 @@ class TestNoiseDiagnostics:
         "paired_dataset",
         "patch_pool_residuals",
         "sigma_comparison",
+        "temporal_clip_consistency",
     }
 
     def test_run_produces_output_pngs(self, tmp_path: Path) -> None:
@@ -95,9 +96,9 @@ class TestNoiseDiagnostics:
         gen_files = [p for p in written if p.stem.startswith("generator_")]
 
         # There should be at least one grid per noise type:
-        # gaussian (low), gaussian (medium), poisson-gaussian, real_inject,
-        # real_raw, mixed — 6 in default config
-        assert len(gen_files) >= 4, (
+        # gaussian (low), gaussian (medium), poisson-gaussian, camera, real_inject,
+        # real_raw, mixed — 7 in default config
+        assert len(gen_files) >= 5, (
             f"Expected ≥4 per-generator PNG files, got {len(gen_files)}: "
             f"{[p.name for p in gen_files]}"
         )

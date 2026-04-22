@@ -260,10 +260,10 @@ class TestSpatialWeightTransfer:
         spatial = NAFNet(NAFNetConfig.tiny())
         temporal = NAFNetTemporal(NAFNetConfig.tiny())
 
-        # Zero out temporal_mix weights in temporal before loading
+        # Zero out the 1×1 conv (first submodule) in each temporal_mix Sequential
         for m in temporal.temporal_mix:
-            nn.init.zeros_(m.weight)
-            nn.init.zeros_(m.bias)
+            nn.init.zeros_(m[0].weight)
+            nn.init.zeros_(m[0].bias)
 
         with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as f:
             tmp_path = f.name
@@ -275,7 +275,7 @@ class TestSpatialWeightTransfer:
 
         # temporal_mix weights should still be zero (not touched by load)
         for m in temporal.temporal_mix:
-            assert m.weight.abs().sum().item() == 0.0
+            assert m[0].weight.abs().sum().item() == 0.0
 
 
 import torch.nn as nn

@@ -401,7 +401,7 @@ class TestPairedPatchDataset:
         for stem in ("a", "c", "extra"):
             iio.imwrite(str(noisy_dir / f"{stem}.png"), np.zeros((32, 32, 3), dtype=np.uint8))
 
-        with pytest.raises(ValueError, match="Frame mismatch"):
+        with pytest.raises(ValueError, match="no matching noisy counterpart"):
             PairedPatchDataset(clean_dir, noisy_dir, patch_size=64, match_by_name=True)
 
     def test_match_by_position(self, tmp_path: Path) -> None:
@@ -512,7 +512,7 @@ class TestPairedVideoSequenceDataset:
         mismatched = noisy_root / "seq_000" / "frame_000003.png"
         mismatched.rename(noisy_root / "seq_000" / "frame_999999.png")
 
-        with pytest.raises(ValueError, match="Frame mismatch"):
+        with pytest.raises(ValueError, match="no matching noisy counterpart"):
             PairedVideoSequenceDataset(
                 [clean_root],
                 [noisy_root],

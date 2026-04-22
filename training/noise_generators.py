@@ -244,6 +244,110 @@ class RealRAWNoiseGenerator:
 
 
 # ---------------------------------------------------------------------------
+# Camera video noise
+# ---------------------------------------------------------------------------
+
+
+class _ClipNoiseApplier:
+    """Per-clip noise state created by ``CameraNoiseGenerator.for_clip()``.
+
+    Holds fixed ISO parameters and lazily generates row-banding fixed-pattern
+    noise on the first call so it remains identical across all frames of a clip.
+    Do not instantiate directly — use ``CameraNoiseGenerator.for_clip()``.
+    """
+
+    def __init__(self, k: float, sigma_r: float, fp_strength: float) -> None:
+        self._k = k
+        self._sigma_r = sigma_r
+        self._fp_strength = fp_strength
+        self._fixed_pattern: Optional[Tensor] = None
+
+    def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        if self._fixed_pattern is None:
+            # Row banding: (…, C, H, 1) broadcasts across W — same for every frame
+            fp_shape = list(clean.shape)
+            fp_shape[-1] = 1
+            self._fixed_pattern = torch.randn(fp_shape, device=clean.device) * self._fp_strength
+        fp = self._fixed_pattern.to(clean.device)
+        shot = torch.poisson(clean.clamp(min=0.0) / self._k) * self._k - clean
+        read = torch.randn_like(clean) * self._sigma_r
+        noisy = clean + shot + read + fp
+        sigma_map = (self._k * clean.clamp(min=0.0) + self._sigma_r ** 2).sqrt()
+        return noisy, clean, sigma_map
+
+
+class CameraNoiseGenerator:
+    """ISO-parameterised Poisson-Gaussian noise model for camera video.
+
+    Maps ISO values to Poisson gain *K* and read noise *sigma_r* via an
+    empirical camera noise model:
+
+        K       = K_ref  * (iso / iso_ref)            — shot noise, linear in ISO
+        sigma_r = sr_ref * (iso / iso_ref) ** 0.5     — read noise, sub-linear
+
+    Single-frame usage (new ISO drawn per call):
+
+        gen = CameraNoiseGenerator(iso_range=(100, 6400))
+        noisy, clean, sigma_map = gen(clean_frame)
+
+    Temporally consistent clip usage (same ISO + fixed-pattern for all frames):
+
+        per_frame = gen.for_clip()
+        noisy_frames = [per_frame(f) for f in clean_clip]
+
+    Args:
+        iso_range:              (min, max) ISO to sample from (default: 100–6400).
+        iso_ref:                Reference ISO at which K_ref / sr_ref are defined.
+        K_ref:                  Shot noise gain at iso_ref (electrons/DN equivalent).
+        sr_ref:                 Read noise std dev at iso_ref (normalised 0-1 range).
+        fixed_pattern_strength: Row-banding amplitude used by ``for_clip()``.
+                                0.0 disables fixed-pattern noise.
+    """
+
+    def __init__(
+        self,
+        iso_range: tuple[float, float] = (100.0, 6400.0),
+        iso_ref: float = 1600.0,
+        K_ref: float = 0.012,
+        sr_ref: float = 0.005,
+        fixed_pattern_strength: float = 0.002,
+    ) -> None:
+        self.iso_range = iso_range
+        self.iso_ref = iso_ref
+        self.K_ref = K_ref
+        self.sr_ref = sr_ref
+        self.fixed_pattern_strength = fixed_pattern_strength
+
+    def _iso_to_params(self, iso: float) -> tuple[float, float]:
+        ratio = iso / self.iso_ref
+        return self.K_ref * ratio, self.sr_ref * (ratio ** 0.5)
+
+    def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Apply Poisson-Gaussian camera noise to a single frame.
+
+        Draws a new ISO per call — for clip-consistent noise use ``for_clip()``.
+        """
+        iso = random.uniform(*self.iso_range)
+        k, sigma_r = self._iso_to_params(iso)
+        shot = torch.poisson(clean.clamp(min=0.0) / k) * k - clean
+        read = torch.randn_like(clean) * sigma_r
+        noisy = clean + shot + read
+        sigma_map = (k * clean.clamp(min=0.0) + sigma_r ** 2).sqrt()
+        return noisy, clean, sigma_map
+
+    def for_clip(self) -> _ClipNoiseApplier:
+        """Return a clip-scoped noise applicator with fixed ISO and fixed-pattern noise.
+
+        Call once per clip; reuse the returned object for every frame in that clip.
+        ISO (K, sigma_r) and row-banding are sampled once and held fixed across
+        all frames — matching real camera behaviour where ISO is set per shot.
+        """
+        iso = random.uniform(*self.iso_range)
+        k, sigma_r = self._iso_to_params(iso)
+        return _ClipNoiseApplier(k, sigma_r, self.fixed_pattern_strength)
+
+
+# ---------------------------------------------------------------------------
 # Mixed
 # ---------------------------------------------------------------------------
 

@@ -343,6 +343,35 @@ def _warp(feat: Tensor, offset: Tensor) -> Tensor:
     return F.grid_sample(feat, grid, mode="bilinear", padding_mode="border", align_corners=True)
 
 
+def _make_offset_head(skip_ch: int) -> nn.Sequential:
+    """MobileNet-style warp offset head: DW 3×3 → PW 1×1 → ReLU → PW 1×1 → (dx, dy).
+
+    Replaces the single Conv2d(2C, 2, 1) with a 3-layer head that has enough
+    receptive field to estimate motion from spatial context:
+
+        depthwise 3×3  — spatial mixing, no cross-channel info (cheap)
+        pointwise 1×1  — cross-channel reduction 2C → C
+        ReLU
+        pointwise 1×1  — project to 2 offset channels
+
+    Only the final projection is zero-initialised so displacements start at
+    zero (identity warp at epoch 0); intermediate layers use PyTorch default
+    Kaiming init for stable gradient flow.
+
+    Args:
+        skip_ch: Channels in one frame's skip features.  Input to the head is
+                 2 * skip_ch (reference frame cat neighbour frame).
+    """
+    dw  = nn.Conv2d(2 * skip_ch, 2 * skip_ch, kernel_size=3, padding=1,
+                    groups=2 * skip_ch, bias=False)
+    pw1 = nn.Conv2d(2 * skip_ch, skip_ch, kernel_size=1, bias=False)
+    act = nn.ReLU(inplace=True)
+    pw2 = nn.Conv2d(skip_ch, 2, kernel_size=1, bias=True)
+    nn.init.zeros_(pw2.weight)
+    nn.init.zeros_(pw2.bias)
+    return nn.Sequential(dw, pw1, act, pw2)
+
+
 # ---------------------------------------------------------------------------
 # NAFNet
 # ---------------------------------------------------------------------------
@@ -683,14 +712,11 @@ class NAFNetTemporal(nn.Module):
         nn.init.zeros_(self.ending.bias)
 
         # --- Per-level offset heads (use_warp=True only) ---
-        # Zero-init: identity displacement at epoch 0.
+        # Zero-init on final layer → identity displacement at epoch 0.
         if use_warp:
-            self.offset_heads = nn.ModuleList()
-            for skip_ch in enc_channels:
-                head = nn.Conv2d(2 * skip_ch, 2, kernel_size=1, bias=True)
-                nn.init.zeros_(head.weight)
-                nn.init.zeros_(head.bias)
-                self.offset_heads.append(head)
+            self.offset_heads = nn.ModuleList([
+                _make_offset_head(skip_ch) for skip_ch in enc_channels
+            ])
 
         # --- Per-level temporal mixing ---
         # Per level: Conv2d(T×C → C, 1×1)  →  n_mix_blocks × NAFBlock(C).
