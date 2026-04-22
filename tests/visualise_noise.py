@@ -42,6 +42,7 @@ if str(TRAIN_DIR) not in sys.path:
     sys.path.insert(0, str(TRAIN_DIR))
 
 from noise_generators import (
+    CameraNoiseGenerator,
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
     PoissonGaussianNoiseGenerator,
@@ -489,6 +490,138 @@ def save_sigma_comparison(
 
 
 # ---------------------------------------------------------------------------
+# Temporal clip consistency visualisation
+# ---------------------------------------------------------------------------
+
+
+def save_temporal_clip_grid(
+    clean: torch.Tensor,
+    image_name: str,
+    out_dir: Path,
+    n_frames: int = 5,
+    noise_amplify: float = 8.0,
+) -> Path:
+    """Show how per-frame vs clip-consistent noise looks across consecutive frames.
+
+    This is the key diagnostic for video denoising: you want to see whether
+    the noise character is stable across frames (as in a real camera) or jumps
+    randomly (which would cause flickering after denoising).
+
+    Layout — three sections stacked vertically:
+
+        Row A  "Per-frame noise"  — CameraNoiseGenerator called fresh each frame
+                                    (different ISO every frame → noise level jumps)
+        Row B  "Clip noise"       — CameraNoiseGenerator.for_clip() called once
+                                    (same ISO + same row-banding for every frame)
+        Row C  "Frame difference" — |frame_i − frame_{i-1}| ×amp for both rows
+                                    Per-frame: large diff (noise level changes)
+                                    Clip:      small diff (only shot noise changes)
+
+    Columns = individual frames (0 … n_frames-1), then one column "Δ mean"
+    showing the mean absolute frame-to-frame difference for each row.
+
+    Args:
+        clean:       (C, H, W) float32 tensor — one representative frame.
+        image_name:  Label used in the title.
+        out_dir:     Where to write the PNG.
+        n_frames:    How many synthetic frames to generate (default: 5).
+        noise_amplify: Amplification for noise-residual cells.
+
+    Returns:
+        Path to the saved PNG.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    cam = CameraNoiseGenerator(iso_range=(400.0, 6400.0))
+
+    with torch.no_grad():
+        # Per-frame: new ISO drawn each call → noise level jumps between frames
+        per_frame_noisy = [cam(clean)[0] for _ in range(n_frames)]
+
+        # Clip-consistent: ISO fixed once, row banding fixed once
+        clip_applier = cam.for_clip()
+        clip_noisy = [clip_applier(clean)[0] for _ in range(n_frames)]
+
+    def _diff(frames: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Consecutive absolute differences, amplified for display."""
+        diffs = []
+        for a, b in zip(frames, frames[1:]):
+            diffs.append(_amplify_residual((b - a).abs(), noise_amplify))
+        return diffs
+
+    per_diffs = _diff(per_frame_noisy)
+    clip_diffs = _diff(clip_noisy)
+
+    def _mean_diff(frames: list[torch.Tensor]) -> str:
+        diffs = [(b - a).abs().mean().item() for a, b in zip(frames, frames[1:])]
+        return f"Δ̄={np.mean(diffs):.4f}"
+
+    n_cols = n_frames + 1  # frames + mean-diff summary cell
+    n_rows = 6             # noisy A, diff A, noisy B, diff B, residual A, residual B
+    cell = 2.2
+
+    row_labels = [
+        f"Per-frame\nnoisy",
+        f"Per-frame\n|Δ| ×{noise_amplify:.0f}",
+        f"Clip\nnoisy",
+        f"Clip\n|Δ| ×{noise_amplify:.0f}",
+        "Per-frame\nnoise residual",
+        "Clip\nnoise residual",
+    ]
+    col_labels = [f"frame {i}" for i in range(n_frames)] + ["mean |Δ|"]
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * cell, n_rows * cell + 0.7),
+        squeeze=False,
+    )
+    fig.suptitle(
+        f"Temporal clip noise consistency — image: {image_name}\n"
+        "Per-frame: ISO resampled every frame (bad for video).  "
+        "Clip: ISO + banding fixed for the whole clip (matches real camera).",
+        fontsize=10, fontweight="bold",
+    )
+
+    def _fill_row(row_idx: int, cells: list[torch.Tensor], summary: str) -> None:
+        for c, t in enumerate(cells):
+            axes[row_idx][c].imshow(_tensor_to_uint8(t), interpolation="nearest")
+            axes[row_idx][c].set_xticks([])
+            axes[row_idx][c].set_yticks([])
+        # Summary cell (last column)
+        axes[row_idx][n_cols - 1].text(
+            0.5, 0.5, summary,
+            ha="center", va="center", fontsize=10,
+            transform=axes[row_idx][n_cols - 1].transAxes,
+        )
+        axes[row_idx][n_cols - 1].set_xticks([])
+        axes[row_idx][n_cols - 1].set_yticks([])
+        axes[row_idx][0].set_ylabel(
+            row_labels[row_idx], fontsize=8, rotation=0,
+            ha="right", va="center", labelpad=70,
+        )
+
+    _fill_row(0, per_frame_noisy, "—")
+    _fill_row(1, per_diffs, _mean_diff(per_frame_noisy))
+    _fill_row(2, clip_noisy, "—")
+    _fill_row(3, clip_diffs, _mean_diff(clip_noisy))
+    _fill_row(4, [_amplify_residual(n - clean, noise_amplify) for n in per_frame_noisy], "—")
+    _fill_row(5, [_amplify_residual(n - clean, noise_amplify) for n in clip_noisy], "—")
+
+    # Column headers on top row
+    for c, label in enumerate(col_labels):
+        axes[0][c].set_title(label, fontsize=8, pad=3)
+
+    fig.tight_layout()
+    out_path = out_dir / "temporal_clip_consistency.png"
+    fig.savefig(out_path, bbox_inches="tight", dpi=110)
+    plt.close(fig)
+    print(f"  Saved: {out_path.name}")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -549,6 +682,8 @@ def run(
             GaussianNoiseGenerator(10.0 / 255.0, 25.0 / 255.0)),
         ("Poisson-Gaussian",
             PoissonGaussianNoiseGenerator()),
+        ("Camera ISO 100–6400",
+            CameraNoiseGenerator(iso_range=(100.0, 6400.0))),
         (pool_label,
             RealNoiseInjectionGenerator(str(pool_path))),
         (profile_label,
@@ -604,6 +739,18 @@ def run(
             generators,
             checkerboard,
             "checkerboard",
+            out_dir,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # 6.  Temporal clip consistency
+    # ------------------------------------------------------------------
+    print("\n── Temporal clip consistency ──")
+    written.append(
+        save_temporal_clip_grid(
+            images[0][1],
+            images[0][0],
             out_dir,
         )
     )

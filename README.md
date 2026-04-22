@@ -40,7 +40,8 @@ ml-video-denoiser/
 ├── tests/                       C++ gtests + Python integration tests
 │   ├── gen_fixtures.py          Generates tiny_unet fixture for parity tests
 │   ├── gen_sample_images.py     Generates bundled 128×128 PNGs for smoke tests
-│   ├── visualise_noise.py       Visual diagnostic — noise grids + paired dataset PNGs
+│   ├── visualise_noise.py       Visual diagnostic — noise grids + temporal clip consistency PNGs
+│   ├── noise_preview.py         CLI noise preview — apply generators at multiple levels to a user image
 │   └── test_integration.py      Phase 6 Python ↔ C++ parity tests
 ├── third_party/                 nlohmann_json, stb, tinyexr, googletest (submodules)
 └── CMakeLists.txt
@@ -220,6 +221,7 @@ Tests for every noise generator class.
 | `TestPoissonGaussianNoiseGenerator` | Heteroscedastic sigma (brighter → more noise) |
 | `TestRealNoiseInjectionGenerator` | Pool load, patch add, local-std sigma_map |
 | `TestRealRAWNoiseGenerator` | Profile JSON load, multi-ISO sampling |
+| `TestCameraNoiseGenerator` | ISO-to-params mapping, single-frame and for_clip() modes, fixed-pattern row consistency |
 | `TestMixedNoiseGenerator` | Weight normalisation, all-types combination, missing pool/profile graceful fallback |
 
 #### `test_noise_profiler.py`
@@ -252,8 +254,8 @@ All tests are skipped automatically if the bundled sample images are not present
 | Test | What it covers |
 |---|---|
 | `test_run_produces_output_pngs` | `run()` returns a non-empty list; every returned path exists on disk |
-| `test_all_expected_categories_present` | Overview, paired_dataset, patch_pool_residuals, sigma_comparison are all produced |
-| `test_generator_grids_cover_all_noise_types` | At least 4 per-generator PNGs (`generator_*.png`) are written |
+| `test_all_expected_categories_present` | Overview, paired_dataset, patch_pool_residuals, sigma_comparison, temporal_clip_consistency are all produced |
+| `test_generator_grids_cover_all_noise_types` | At least 5 per-generator PNGs (`generator_*.png`) are written |
 | `test_no_zero_byte_outputs` | No PNG is empty (matplotlib rendered actual pixel data) |
 | `test_sample_image_count_matches_rows` | Still 5 bundled sample images; overview PNG is ≥ 200×200 px |
 
@@ -399,6 +401,46 @@ uv run python training.py \
     --val-data /path/to/val_images \
     --val-crop-mode full
 ```
+
+### Camera video noise
+
+`CameraNoiseGenerator` models real camera sensor noise via an ISO-parameterised Poisson-Gaussian formula:
+
+```
+K       = K_ref  × (iso / iso_ref)          — shot noise, linear in ISO
+sigma_r = sr_ref × (iso / iso_ref) ^ 0.5   — read noise, sub-linear
+noisy   = Poisson(clean / K) × K  +  N(0, sigma_r²)
+```
+
+**Single-frame use** (new ISO drawn each call):
+
+```python
+gen = CameraNoiseGenerator(iso_range=(100, 6400))
+noisy, clean, sigma_map = gen(clean_frame)
+```
+
+**Clip-consistent use** — same ISO and row-banding fixed for the entire clip, matching real camera behaviour where the ISO setting does not change between frames:
+
+```python
+per_frame = gen.for_clip()          # call once per clip
+noisy_frames = [per_frame(f) for f in clean_clip]
+```
+
+`for_clip()` returns a `_ClipNoiseApplier` that generates row-banding fixed-pattern noise on the first call and reuses it identically for every subsequent frame in the clip.
+
+**ISO → noise level reference** (default calibration, `iso_ref=1600`):
+
+| ISO | K (shot) | σ_read |
+|---|---|---|
+| 200 | 0.0015 | 0.0018 |
+| 800 | 0.006 | 0.0035 |
+| 1600 | 0.012 | 0.005 |
+| 6400 | 0.048 | 0.01 |
+| 12800 | 0.096 | 0.014 |
+
+Use `for_clip()` whenever training the temporal model so the noise character is consistent across frames — independent ISO resampling per frame causes the noise level to jump between frames, which the model cannot learn to exploit.
+
+---
 
 ### Temporal model training
 
@@ -668,6 +710,7 @@ Output files:
 | `paired_dataset.png` | `PairedPatchDataset` samples — clean \| noisy \| residual \| sigma |
 | `patch_pool_residuals.png` | Raw noise patches from the `.npz` pool (amplified ×10 for visibility) |
 | `sigma_comparison.png` | Sigma maps from all generators on one image, side by side |
+| `temporal_clip_consistency.png` | Per-frame vs clip-consistent `CameraNoiseGenerator` across 5 frames — rows show noisy frames, frame-to-frame \|Δ\| amplified ×8, and noise residuals; last column shows mean \|Δ\| so you can quantify the consistency improvement from `for_clip()` |
 
 When a real `--patch-pool` or `--noise-profile` is not provided, the script
 creates synthetic stand-ins automatically so the full set of output PNGs is
@@ -676,6 +719,45 @@ always produced.
 The same diagnostic is exercised by `test_noise_visual.py` (see Tests section
 above), which calls `run()` in a temporary directory and asserts every expected
 file is produced with non-zero size.
+
+### Noise preview CLI
+
+`tests/noise_preview.py` takes **your own image** and produces a generator × noise-level grid for rapid visual assessment — useful before committing to a training run.
+
+```bash
+cd training
+
+# All generators, 4 levels each — output saved next to input image
+uv run python ../tests/noise_preview.py --image /path/to/photo.jpg
+
+# Specific generators and custom ISO sweep
+uv run python ../tests/noise_preview.py \
+    --image /path/to/photo.jpg \
+    --generators gaussian camera \
+    --iso-min 200 --iso-max 12800 \
+    --n-levels 6
+
+# Include temporal clip strip (per-frame vs clip-consistent noise)
+uv run python ../tests/noise_preview.py \
+    --image /path/to/photo.jpg \
+    --temporal --n-frames 5
+
+# Full control
+uv run python ../tests/noise_preview.py \
+    --image /path/to/photo.jpg \
+    --generators gaussian poisson camera mixed \
+    --n-levels 4 \
+    --sigma-min 0.01 --sigma-max 0.3 \
+    --iso-min 100 --iso-max 6400 \
+    --amplify 8 \
+    --out /tmp/preview.png
+```
+
+Output: `<image_stem>_noise_preview.png` (generator × level grid) and optionally `<image_stem>_temporal.png` (temporal consistency strip).
+
+Grid layout — rows = generator × level, columns = Clean | Noisy | Residual×N | Sigma map.
+
+Temporal strip layout — four rows: per-frame noisy, per-frame |Δ|, clip noisy, clip |Δ|. The last column shows the mean absolute frame-to-frame difference `Δ̄`; a well-configured `for_clip()` should show visibly smaller `Δ̄` than per-frame resampling.
 
 ---
 
@@ -726,12 +808,21 @@ uv run python infer.py \
     --output photo_4k_denoised.png
 
 # Temporal model — denoises every frame using a 3-frame window
+# Temporal flip averaging is enabled by default (2× inference, improves consistency)
 uv run python infer.py \
     --checkpoint checkpoints/temporal/best.pth \
-    --model temporal \
     --input noisy_frames/ \
     --output denoised_frames/
+
+# Disable temporal flip for faster inference (slight flicker increase)
+uv run python infer.py \
+    --checkpoint checkpoints/temporal/best.pth \
+    --input noisy_frames/ \
+    --output denoised_frames/ \
+    --no-temporal-flip
 ```
+
+**Temporal flip averaging:** for temporal models, `infer.py` runs the sequence forward and then in reverse (time-flipped), then averages both predictions for each frame.  Because the two passes see different temporal context orderings, per-frame noise variance drops and temporal consistency improves.  The cost is 2× inference time.  Disable with `--no-temporal-flip`.
 
 ---
 
@@ -827,7 +918,16 @@ Reference frame = centre frame (index `num_frames // 2`).
 No learned warp by default — Monte Carlo render noise is pixel-independent across frames and averages out naturally without warping.
 
 **Optional learned warp** (`--use-warp`):
-Each neighbour feature map is warped to the reference before mixing using a per-level offset head — `Conv2d(2C, 2, 1)` predicting a dense `(dx, dy)` displacement field applied via bilinear `grid_sample`. Use this for real video with significant camera or object motion; leave disabled for render sequences.
+Each neighbour feature map is warped to the reference before mixing using a per-level MobileNet-style offset head:
+
+```
+DW-Conv 3×3 (2C groups)  — spatial context, low cost
+PW-Conv 1×1  (2C → C)    — cross-channel mixing
+ReLU
+PW-Conv 1×1  (C → 2)     — dense (dx, dy) displacement, zero-init
+```
+
+The displacement field is applied via bilinear `grid_sample`.  Only the final projection is zero-initialised so warps start as identity at epoch 0; intermediate layers use Kaiming init for stable gradient flow.  Use this for real video with significant camera or object motion; leave disabled for render sequences where Monte Carlo noise is pixel-independent.
 
 At epoch 0 both NAFNet models are exact identity via zero-init ending conv and temporal/reference-preserving initialisation.
 

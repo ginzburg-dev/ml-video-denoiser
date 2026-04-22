@@ -62,11 +62,14 @@ Extends the spatial NAFNet backbone with per-level temporal mixing and an option
 ```
 1. Shared encoder  →  features for all T=5 frames (batch trick: B×T)
 
-2. Per-level DeformableAlignment (weight-shared across neighbour positions):
+2. Per-level learned warp (use_warp=True only):
    concat(ref_feat, nbr_feat)               → (N, 2C, H, W)
-   offset_conv: Conv2d(2C → 2·dg·kH·kW)    → spatial offsets
-   mask_conv:   Conv2d(2C →  dg·kH·kW)     → modulation masks (pre-sigmoid)
-   DCNv2: bilinear_sample(nbr, offsets) × sigmoid(masks)
+   MobileNet-style offset head:
+     DW-Conv2d(2C, 2C, k=3, groups=2C)     — spatial context, per-channel
+     PW-Conv2d(2C → C, k=1)                — cross-channel mixing
+     ReLU
+     PW-Conv2d(C → 2, k=1)  [zero-init]   — dense (dx, dy) displacement
+   grid_sample(nbr_feat, base_grid + offset) — bilinear warp
 
 3. Per-level temporal fusion:
    concat(aligned_t0, …, aligned_t4)         → (N, T·C, H, W)
@@ -160,8 +163,25 @@ All noise is generated on-the-fly from clean images — the dataset stores only 
 |---|---|---|
 | `GaussianNoiseGenerator` | σ ~ Uniform(σ_min, σ_max) | Baseline AWGN |
 | `PoissonGaussianNoiseGenerator` | noisy = Poisson(x/K)·K + N(0,σ_r²) | RAW sensor simulation |
+| `CameraNoiseGenerator` | ISO-parameterised Poisson-Gaussian; `K = K_ref·(iso/iso_ref)`, `σ_r = sr_ref·√(iso/iso_ref)` | Camera video training — single-frame or clip-consistent via `for_clip()` |
+| `_ClipNoiseApplier` | Fixed (K, σ_r) + persistent row-banding across all frames | Returned by `CameraNoiseGenerator.for_clip()`; ensures same ISO and banding for every frame in a clip |
 | `RealNoiseInjectionGenerator` | Zero-mean residuals from dark frames | Authentic camera noise structure |
 | `RealRAWNoiseGenerator` | Calibrated (K, σ_r) from JSON profile | Generalization across ISOs |
 | `MixedNoiseGenerator` | Weighted random selection | Default training mix |
 
 Default training mix: 30% Gaussian + 30% Poisson-Gaussian + 25% RealInject + 15% RealRAW.
+
+### CameraNoiseGenerator — clip consistency
+
+For temporal model training, noise must be consistent across frames (real cameras keep the same ISO per shot).  Use `for_clip()` instead of calling the generator directly:
+
+```python
+cam = CameraNoiseGenerator(iso_range=(400, 6400))
+
+# Wrong — independent ISO per frame causes noise level to jump
+noisy_frames = [cam(f)[0] for f in clean_clip]
+
+# Correct — ISO and row-banding fixed for the whole clip
+per_frame = cam.for_clip()
+noisy_frames = [per_frame(f)[0] for f in clean_clip]
+```
