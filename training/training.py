@@ -496,6 +496,13 @@ def train(
             if val_loader is not None:
                 print(f"  val loss={val_loss:.6f}  val psnr={val_psnr:.2f}dB")
 
+            # Always overwrite last.pth — used for resuming interrupted runs
+            _save_checkpoint(
+                output_dir / "last.pth",
+                model, optimizer, scheduler, epoch, best_psnr,
+                training_config=training_config,
+            )
+
             # Periodic checkpoint
             if (epoch + 1) % checkpoint_every == 0:
                 _save_checkpoint(
