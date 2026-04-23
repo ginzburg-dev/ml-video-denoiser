@@ -15,3 +15,4 @@ uv run python infer.py \
   --checkpoint "$CHECKPOINT" \
   --input "$INPUT_DIR" \
   --output "$OUTPUT_DIR"
+  --no-temporal-flip
