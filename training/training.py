@@ -80,9 +80,11 @@ from dataset import (
     PairedPatchDataset,
     PairedVideoSequenceDataset,
     PatchDataset,
+    TemporalSample,
     VideoSequenceDataset,
     _hwc_to_tensor,
     _load_image,
+    collate_temporal,
 )
 from losses import L1Loss, LogL1Loss, NoiseWeightedL1Loss
 from models import (
@@ -470,43 +472,34 @@ def train(
 
             for step, batch in enumerate(loader):
                 if is_temporal:
-                    # Dataset returns a 4-tuple when a spatial cache is active
-                    # (cascade + freeze_spatial): (noisy, denoised, clean, sigma).
-                    if len(batch) == 4:
-                        noisy, denoised_cache, clean, sigma_map = batch
-                        denoised_cache = denoised_cache.to(device)
-                    else:
-                        noisy, clean, sigma_map = batch    # (B, T, C, H, W) each
-                        denoised_cache = None
-                    noisy = noisy.to(device)
-                    clean = clean.to(device)
-                    sigma_map = sigma_map.to(device)
+                    assert isinstance(batch, TemporalSample)
+                    noisy     = batch.noisy.to(device)    # (B, T, C, H, W)
+                    clean     = batch.clean.to(device)
+                    sigma_map = batch.sigma.to(device)
+                    denoised  = batch.denoised.to(device) if batch.denoised is not None else None
                     ref_idx = model._ref_idx
-                    clean_linear_ref = clean[:, ref_idx]   # (B, C, H, W) — reference frame
-                    noisy = _apply_color_space(noisy, color_space)
-                    clean = _apply_color_space(clean, color_space)
+                    clean_linear_ref = clean[:, ref_idx]  # (B, C, H, W)
+                    noisy     = _apply_color_space(noisy, color_space)
+                    clean     = _apply_color_space(clean, color_space)
                     sigma_map = _apply_color_space(sigma_map, color_space)
                     clean_ref = clean[:, ref_idx]
                     sigma_ref = sigma_map[:, ref_idx]
                 else:
-                    noisy, clean, sigma_map = batch        # (B, C, H, W) each
-                    noisy = noisy.to(device)
-                    clean = clean.to(device)
+                    noisy, clean, sigma_map = batch       # (B, C, H, W)
+                    noisy     = noisy.to(device)
+                    clean     = clean.to(device)
                     sigma_map = sigma_map.to(device)
                     clean_linear_ref = clean
-                    noisy = _apply_color_space(noisy, color_space)
-                    clean = _apply_color_space(clean, color_space)
+                    noisy     = _apply_color_space(noisy, color_space)
+                    clean     = _apply_color_space(clean, color_space)
                     sigma_map = _apply_color_space(sigma_map, color_space)
                     clean_ref = clean
                     sigma_ref = sigma_map
-                    denoised_cache = None
+                    denoised  = None
 
                 optimizer.zero_grad()
                 with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
-                    if denoised_cache is not None:
-                        output = model(noisy, denoised_clip=denoised_cache)
-                    else:
-                        output = model(noisy)
+                    output = model(noisy) if denoised is None else model(noisy, denoised_clip=denoised)
                     loss = criterion(output, clean_ref, sigma_ref)
 
                 scaler.scale(loss).backward()
@@ -619,25 +612,25 @@ def _validate(
     with torch.no_grad():
         for batch in loader:
             if is_temporal:
-                noisy, clean, sigma_map = batch
+                assert isinstance(batch, TemporalSample)
+                noisy     = batch.noisy.to(device)
+                clean     = batch.clean.to(device)
+                sigma_map = batch.sigma.to(device)
                 ref_idx = model._ref_idx
-                noisy = noisy.to(device)
-                clean = clean.to(device)
-                sigma_map = sigma_map.to(device)
                 clean_linear_ref = clean[:, ref_idx]
-                noisy = _apply_color_space(noisy, color_space)
-                clean = _apply_color_space(clean, color_space)
+                noisy     = _apply_color_space(noisy, color_space)
+                clean     = _apply_color_space(clean, color_space)
                 sigma_map = _apply_color_space(sigma_map, color_space)
                 clean_ref = clean[:, ref_idx]
                 sigma_ref = sigma_map[:, ref_idx]
             else:
                 noisy, clean, sigma_map = batch
-                noisy = noisy.to(device)
-                clean = clean.to(device)
+                noisy     = noisy.to(device)
+                clean     = clean.to(device)
                 sigma_map = sigma_map.to(device)
                 clean_linear_ref = clean
-                noisy = _apply_color_space(noisy, color_space)
-                clean = _apply_color_space(clean, color_space)
+                noisy     = _apply_color_space(noisy, color_space)
+                clean     = _apply_color_space(clean, color_space)
                 sigma_map = _apply_color_space(sigma_map, color_space)
                 clean_ref = clean
                 sigma_ref = sigma_map
@@ -1257,9 +1250,16 @@ def main() -> None:
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
         num_workers=args.workers, pin_memory=True, drop_last=True,
+        collate_fn=collate_temporal if is_temporal else None,
     )
     val_batch_size = 1 if val_ds is not None and val_crop_mode == "full" else args.batch_size
-    val_loader = DataLoader(val_ds, batch_size=val_batch_size, num_workers=args.workers) if val_ds else None
+    val_loader = (
+        DataLoader(
+            val_ds, batch_size=val_batch_size, num_workers=args.workers,
+            collate_fn=collate_temporal if is_temporal else None,
+        )
+        if val_ds else None
+    )
 
     for line in _config_summary_lines(
         is_temporal=is_temporal,

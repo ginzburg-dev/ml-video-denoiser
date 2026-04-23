@@ -23,12 +23,13 @@ Four datasets are provided:
       Mixes any list of datasets with explicit sampling weights so that
       synthetic and paired data can be drawn from a single DataLoader.
 
-All datasets return (noisy, clean, sigma_map) tuples.
+Temporal datasets return :class:`TemporalSample` named tuples.
+Spatial datasets return plain ``(noisy, clean, sigma_map)`` tuples.
 """
 
 import random
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import NamedTuple, Optional, Sequence
 
 import numpy as np
 import torch
@@ -38,6 +39,40 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from noise_generators import GaussianNoiseGenerator, MixedNoiseGenerator, NoiseGenerator
+
+
+# ---------------------------------------------------------------------------
+# Temporal batch type
+# ---------------------------------------------------------------------------
+
+
+class TemporalSample(NamedTuple):
+    """Batch item returned by temporal datasets.
+
+    ``denoised`` is populated only when a spatial cache is active
+    (cascade training with ``--freeze-spatial``).  The training loop
+    checks ``batch.denoised is not None`` to decide whether to pass
+    pre-computed spatial outputs to the model.
+    """
+
+    noisy: Tensor              # (T, C, H, W)
+    clean: Tensor              # (T, C, H, W)
+    sigma: Tensor              # (T, C, H, W)
+    denoised: Optional[Tensor] = None  # (T, 3, H, W) — pre-denoised, or None
+
+
+def collate_temporal(batch: list[TemporalSample]) -> TemporalSample:
+    """DataLoader collate function for :class:`TemporalSample` items."""
+    return TemporalSample(
+        noisy=torch.stack([s.noisy for s in batch]),
+        clean=torch.stack([s.clean for s in batch]),
+        sigma=torch.stack([s.sigma for s in batch]),
+        denoised=(
+            torch.stack([s.denoised for s in batch])  # type: ignore[arg-type]
+            if batch[0].denoised is not None
+            else None
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -596,11 +631,10 @@ class VideoSequenceDataset(Dataset):
             clean_frames.append(clean_t)
             sigma_frames.append(sigma_t)
 
-        # Stack: (T, C, H, W)
-        return (
-            torch.stack(noisy_frames),
-            torch.stack(clean_frames),
-            torch.stack(sigma_frames),
+        return TemporalSample(
+            noisy=torch.stack(noisy_frames),
+            clean=torch.stack(clean_frames),
+            sigma=torch.stack(sigma_frames),
         )
 
     @property
@@ -1129,28 +1163,21 @@ class PairedVideoSequenceDataset(Dataset):
             noisy_frames.append(noisy_t)
             sigma_frames.append(sigma_t)
 
+        denoised: Optional[Tensor] = None
         if self._spatial_cache is not None:
             # Apply the same crop and augmentation to cached denoised frames.
             # Cache tensors are (3, H, W) CPU tensors in model space.
             denoised_frames: list[Tensor] = []
             for noisy_path in noisy_paths:
                 d_full = self._spatial_cache[str(noisy_path)]  # (3, H, W)
-                # Pad to match target dimensions if needed
                 _, fh, fw = d_full.shape
                 if fh < target_h or fw < target_w:
-                    pad_h = max(0, target_h - fh)
-                    pad_w = max(0, target_w - fw)
                     d_full = F.pad(
                         d_full.unsqueeze(0),
-                        (0, pad_w, 0, pad_h),
+                        (0, max(0, target_w - fw), 0, max(0, target_h - fh)),
                         mode="reflect",
                     ).squeeze(0)
-                # Crop
-                if ps is None:
-                    d_crop = d_full
-                else:
-                    d_crop = d_full[:, top : top + ps, left : left + ps]
-                # Augment (tensor ops on CHW)
+                d_crop = d_full if ps is None else d_full[:, top : top + ps, left : left + ps]
                 if flip_v:
                     d_crop = d_crop.flip(1)
                 if flip_h:
@@ -1158,18 +1185,13 @@ class PairedVideoSequenceDataset(Dataset):
                 if rot_k:
                     d_crop = torch.rot90(d_crop, rot_k, [1, 2])
                 denoised_frames.append(d_crop.contiguous())
+            denoised = torch.stack(denoised_frames)
 
-            return (
-                torch.stack(noisy_frames),    # (T, C, H, W)
-                torch.stack(denoised_frames), # (T, 3, H, W) — pre-denoised
-                torch.stack(clean_frames),
-                torch.stack(sigma_frames),
-            )
-
-        return (
-            torch.stack(noisy_frames),   # (T, C, H, W)
-            torch.stack(clean_frames),
-            torch.stack(sigma_frames),
+        return TemporalSample(
+            noisy=torch.stack(noisy_frames),
+            clean=torch.stack(clean_frames),
+            sigma=torch.stack(sigma_frames),
+            denoised=denoised,
         )
 
     @property
