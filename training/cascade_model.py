@@ -99,11 +99,15 @@ class NAFNetCascade(nn.Module):
         self._temporal_config = NAFNetConfig.from_dict(t_cfg.to_dict())
         self.temporal_stage = NAFNet(t_cfg)
 
-    def forward(self, clip: Tensor) -> Tensor:
+    def forward(self, clip: Tensor, denoised_clip: Optional[Tensor] = None) -> Tensor:
         """Denoise the centre frame of *clip*.
 
         Args:
             clip: (B, T, C, H, W) noisy frames (float32, any range).
+            denoised_clip: Optional (B, T, 3, H, W) pre-computed spatial stage
+                outputs.  When supplied the spatial stage is skipped entirely —
+                use this together with ``freeze_spatial_stage()`` to cache
+                spatial outputs across epochs and avoid redundant inference.
 
         Returns:
             Denoised centre frame (B, 3, H, W).
@@ -113,10 +117,14 @@ class NAFNetCascade(nn.Module):
 
         clip = torch.nan_to_num(clip, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Denoise all frames with the shared spatial stage
-        frames_flat = clip.view(b * t, c, h, w)
-        denoised_flat = self.spatial_stage(frames_flat)   # (B*T, 3, H, W)
-        denoised = denoised_flat.view(b, t, 3, h, w)
+        if denoised_clip is not None:
+            # Pre-computed spatial outputs supplied — skip the spatial stage.
+            denoised = denoised_clip  # (B, T, 3, H, W)
+        else:
+            # Denoise all frames with the shared spatial stage
+            frames_flat = clip.view(b * t, c, h, w)
+            denoised_flat = self.spatial_stage(frames_flat)   # (B*T, 3, H, W)
+            denoised = denoised_flat.view(b, t, 3, h, w)
 
         # Arrange input for the temporal stage:
         #   [denoised_ref(3), denoised_others((T-1)×3), raw_center(3)]

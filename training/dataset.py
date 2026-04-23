@@ -944,6 +944,7 @@ class PairedVideoSequenceDataset(Dataset):
         self._crop_mode = crop_mode
         self._crop_grid_size = crop_grid_size
         self._num_sequences = len(self._sequences)
+        self._spatial_cache: Optional[dict[str, "torch.Tensor"]] = None
         if self._random_windows and self._windows_per_sequence <= 0:
             raise ValueError("windows_per_sequence must be positive when random_windows is enabled")
         self._clips = (
@@ -955,6 +956,23 @@ class PairedVideoSequenceDataset(Dataset):
                 windows_per_sequence=windows_per_sequence,
             )
         )
+
+    def set_spatial_cache(self, cache: "dict[str, torch.Tensor]") -> None:
+        """Set pre-computed spatial stage outputs for all frames.
+
+        When set, ``__getitem__`` returns a 4-tuple
+        ``(noisy_clip, denoised_clip, clean_clip, sigma_map)`` instead of the
+        usual 3-tuple.  The denoised_clip tensors are cropped and augmented
+        identically to noisy_clip so the correspondence is preserved.
+
+        Args:
+            cache: Mapping from absolute noisy frame path (str) to a
+                ``(3, H, W)`` float32 CPU tensor holding the frozen spatial
+                stage output.  Tensors should be in shared memory
+                (``tensor.share_memory_()``) so DataLoader workers can access
+                them without copying.
+        """
+        self._spatial_cache = cache
 
     @staticmethod
     def _collect_paired_sequences(
@@ -1035,8 +1053,14 @@ class PairedVideoSequenceDataset(Dataset):
             return self._num_sequences * self._windows_per_sequence * self._patches_per_image
         return len(self._clips) * self._patches_per_image
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
-        """Return (noisy_clip, clean_clip, sigma_map) each shaped (T, C, H, W)."""
+    def __getitem__(self, idx: int) -> tuple[Tensor, ...]:
+        """Return (noisy_clip, clean_clip, sigma_map) each shaped (T, C, H, W).
+
+        When a spatial cache has been set via :meth:`set_spatial_cache`, returns
+        a 4-tuple ``(noisy_clip, denoised_clip, clean_clip, sigma_map)`` where
+        *denoised_clip* contains the pre-computed frozen spatial stage outputs
+        with the same crop and augmentation applied.
+        """
         clean_paths, noisy_paths = self._sample_frame_paths(idx)
 
         ps = self._patch_size
@@ -1104,6 +1128,43 @@ class PairedVideoSequenceDataset(Dataset):
             clean_frames.append(clean_t)
             noisy_frames.append(noisy_t)
             sigma_frames.append(sigma_t)
+
+        if self._spatial_cache is not None:
+            # Apply the same crop and augmentation to cached denoised frames.
+            # Cache tensors are (3, H, W) CPU tensors in model space.
+            denoised_frames: list[Tensor] = []
+            for noisy_path in noisy_paths:
+                d_full = self._spatial_cache[str(noisy_path)]  # (3, H, W)
+                # Pad to match target dimensions if needed
+                _, fh, fw = d_full.shape
+                if fh < target_h or fw < target_w:
+                    pad_h = max(0, target_h - fh)
+                    pad_w = max(0, target_w - fw)
+                    d_full = F.pad(
+                        d_full.unsqueeze(0),
+                        (0, pad_w, 0, pad_h),
+                        mode="reflect",
+                    ).squeeze(0)
+                # Crop
+                if ps is None:
+                    d_crop = d_full
+                else:
+                    d_crop = d_full[:, top : top + ps, left : left + ps]
+                # Augment (tensor ops on CHW)
+                if flip_v:
+                    d_crop = d_crop.flip(1)
+                if flip_h:
+                    d_crop = d_crop.flip(2)
+                if rot_k:
+                    d_crop = torch.rot90(d_crop, rot_k, [1, 2])
+                denoised_frames.append(d_crop.contiguous())
+
+            return (
+                torch.stack(noisy_frames),    # (T, C, H, W)
+                torch.stack(denoised_frames), # (T, 3, H, W) — pre-denoised
+                torch.stack(clean_frames),
+                torch.stack(sigma_frames),
+            )
 
         return (
             torch.stack(noisy_frames),   # (T, C, H, W)

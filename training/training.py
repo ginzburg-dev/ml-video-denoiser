@@ -81,6 +81,8 @@ from dataset import (
     PairedVideoSequenceDataset,
     PatchDataset,
     VideoSequenceDataset,
+    _hwc_to_tensor,
+    _load_image,
 )
 from losses import L1Loss, LogL1Loss, NoiseWeightedL1Loss
 from models import (
@@ -311,6 +313,69 @@ def _inverse_color_space(tensor: Tensor, color_space: str) -> Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Spatial stage cache (cascade + freeze_spatial only)
+# ---------------------------------------------------------------------------
+
+
+def _build_spatial_cache(
+    model: nn.Module,
+    dataset: PairedVideoSequenceDataset,
+    device: torch.device,
+    color_space: str,
+) -> dict[str, Tensor]:
+    """Pre-compute frozen spatial stage outputs for every frame in *dataset*.
+
+    Iterates all unique noisy frame paths in ``dataset._sequences``, runs the
+    frozen ``model.spatial_stage`` at full resolution on GPU, and stores the
+    results as shared-memory CPU tensors keyed by absolute path string.
+
+    Using shared memory means DataLoader workers (even with ``spawn`` start
+    method on macOS) can access the tensors without copying them.
+
+    Args:
+        model:       NAFNetCascade with ``freeze_spatial_stage()`` already
+                     called.
+        dataset:     PairedVideoSequenceDataset whose ``_sequences`` attribute
+                     enumerates all frame paths.
+        device:      GPU device to run the spatial stage on.
+        color_space: Must match the color space used during training so the
+                     spatial stage sees the correct input distribution.
+
+    Returns:
+        ``dict[str, Tensor]`` mapping noisy frame path → (3, H, W) float32
+        CPU shared-memory tensor in model (color-transformed) space.
+    """
+    # Collect all unique noisy frame paths
+    all_paths: list[Path] = []
+    seen: set[str] = set()
+    for _clean_frames, noisy_frames in dataset._sequences:
+        for p in noisy_frames:
+            key = str(p)
+            if key not in seen:
+                seen.add(key)
+                all_paths.append(p)
+
+    n = len(all_paths)
+    print(f"Building spatial cache for {n} frames...", flush=True)
+    cache: dict[str, Tensor] = {}
+
+    model.spatial_stage.eval()  # type: ignore[attr-defined]
+    with torch.no_grad():
+        for i, path in enumerate(all_paths):
+            img = _load_image(path)                         # (H, W, C) float32
+            frame = _hwc_to_tensor(img).unsqueeze(0)       # (1, C, H, W)
+            frame = _apply_color_space(frame.to(device), color_space)
+            denoised = model.spatial_stage(frame).squeeze(0).cpu()  # type: ignore[attr-defined]
+            denoised.share_memory_()
+            cache[str(path)] = denoised
+            if (i + 1) % 10 == 0 or i + 1 == n:
+                print(f"  {i + 1}/{n} frames cached", flush=True)
+
+    print(f"Spatial cache ready — {len(cache)} frames in shared memory.", flush=True)
+    return cache
+
+
+# ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
 
@@ -405,7 +470,14 @@ def train(
 
             for step, batch in enumerate(loader):
                 if is_temporal:
-                    noisy, clean, sigma_map = batch        # (B, T, C, H, W) each
+                    # Dataset returns a 4-tuple when a spatial cache is active
+                    # (cascade + freeze_spatial): (noisy, denoised, clean, sigma).
+                    if len(batch) == 4:
+                        noisy, denoised_cache, clean, sigma_map = batch
+                        denoised_cache = denoised_cache.to(device)
+                    else:
+                        noisy, clean, sigma_map = batch    # (B, T, C, H, W) each
+                        denoised_cache = None
                     noisy = noisy.to(device)
                     clean = clean.to(device)
                     sigma_map = sigma_map.to(device)
@@ -427,10 +499,14 @@ def train(
                     sigma_map = _apply_color_space(sigma_map, color_space)
                     clean_ref = clean
                     sigma_ref = sigma_map
+                    denoised_cache = None
 
                 optimizer.zero_grad()
                 with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
-                    output = model(noisy)
+                    if denoised_cache is not None:
+                        output = model(noisy, denoised_clip=denoised_cache)
+                    else:
+                        output = model(noisy)
                     loss = criterion(output, clean_ref, sigma_ref)
 
                 scaler.scale(loss).backward()
@@ -1163,6 +1239,16 @@ def main() -> None:
         n_trainable = sum(p.numel() for p in model_instance.parameters() if p.requires_grad)
         n_frozen    = sum(p.numel() for p in model_instance.parameters() if not p.requires_grad)
         print(f"Spatial stage frozen.  Trainable params: {n_trainable:,}  Frozen: {n_frozen:,}")
+
+    # Build in-memory spatial cache when the spatial stage is frozen (cascade only).
+    # Pre-computing full-res outputs once eliminates 3× spatial forward passes per
+    # training step and reduces epoch time by ~3×.
+    if args.model == "cascade" and args.freeze_spatial and isinstance(train_ds, PairedVideoSequenceDataset):
+        _cache_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _spatial_cache = _build_spatial_cache(
+            model_instance, train_ds, _cache_device, args.color_space
+        )
+        train_ds.set_spatial_cache(_spatial_cache)
     if args.freeze_base:
         n_trainable = sum(p.numel() for p in model_instance.parameters() if p.requires_grad)
         n_frozen    = sum(p.numel() for p in model_instance.parameters() if not p.requires_grad)

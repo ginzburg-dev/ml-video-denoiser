@@ -112,7 +112,6 @@ _val_flags() {
   fi
 }
 
-echo "========================================================"
 echo "  NAFNetCascade three-stage training  (exp053 architecture)"
 echo "  Size:           $SIZE"
 echo "  Num frames:     $NUM_FRAMES"
@@ -127,7 +126,6 @@ echo "  Experiment:     ${EXP_NAME:-<default>}"
 echo "  Stage 1 output: $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ "$SKIP_STAGE1" == "1" ] && echo " [SKIP]")"
 echo "  Stage 2 output: $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ "$SKIP_STAGE2" == "1" ] && echo " [SKIP]")"
 echo "  Stage 3 output: $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ "$SKIP_STAGE3" == "1" ] && echo " [SKIP]")"
-echo "========================================================"
 
 # ---------------------------------------------------------------------------
 # Stage 1 — Spatial denoiser  (identical to train.sh / train_synthetic.sh)
@@ -232,6 +230,4 @@ else
 fi
 
 echo ""
-echo "========================================================"
 echo "  Done. Final weights: $STAGE3_OUTPUT/best.pth"
-echo "========================================================"
