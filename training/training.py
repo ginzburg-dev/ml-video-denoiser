@@ -1308,6 +1308,7 @@ def main() -> None:
     # training step and reduces epoch time by ~3×.
     if args.model == "cascade" and args.freeze_spatial and isinstance(train_ds, PairedVideoSequenceDataset):
         _cache_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model_instance.to(_cache_device)
         _spatial_cache = _build_spatial_cache(
             model_instance, train_ds, _cache_device, args.color_space
         )
