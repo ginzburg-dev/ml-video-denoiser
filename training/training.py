@@ -60,10 +60,13 @@ Usage — mixed (60% synthetic, 40% paired):
 """
 
 import argparse
+import json
 import math
 import os
+import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -315,6 +318,64 @@ def _inverse_color_space(tensor: Tensor, color_space: str) -> Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Experiment metadata
+# ---------------------------------------------------------------------------
+
+
+def _git_commit() -> Optional[str]:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+
+
+def _save_experiment_metadata(
+    output_dir: Path,
+    args: argparse.Namespace,
+    model: nn.Module,
+    train_ds: Dataset,
+    val_ds: Optional[Dataset],
+    results: Optional[dict] = None,
+) -> None:
+    """Write experiment.json to *output_dir*.
+
+    Called twice:
+      1. Before training starts — records full config, ``results.completed=false``.
+      2. After training ends — updates results with best PSNR and epoch.
+
+    If training crashes the file remains with ``completed=false`` so you can
+    identify incomplete runs when comparing experiments.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = output_dir / "metadata.json"
+
+    if results is not None and meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+        meta["results"].update(results)
+        meta["results"]["completed"] = True
+    else:
+        meta = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "git_commit": _git_commit(),
+            "args": vars(args),
+            "model_metadata": get_model_metadata(model),
+            "dataset": {
+                "train_samples": len(train_ds),  # type: ignore[arg-type]
+                "val_samples": len(val_ds) if val_ds is not None else None,  # type: ignore[arg-type]
+            },
+            "results": {"completed": False},
+        }
+
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
 # Spatial stage cache (cascade + freeze_spatial only)
 # ---------------------------------------------------------------------------
 
@@ -401,8 +462,13 @@ def train(
     scheduler_name: str = "cosine",
     plateau_patience: int = 10,
     **kwargs,
-) -> None:
+) -> tuple[float, int]:
     """Run the training loop.
+
+    Returns:
+        ``(best_val_psnr, best_epoch)`` — the best validation PSNR achieved
+        and the epoch it occurred on (0-indexed).  Use these to update
+        experiment metadata after training completes.
 
     Args:
         model: Spatial or temporal denoiser instance.
@@ -450,6 +516,7 @@ def train(
     try:
         start_epoch = 0
         best_psnr = 0.0
+        best_epoch = 0
 
         if resume is not None and resume.exists():
             start_epoch, best_psnr = _load_checkpoint(
@@ -539,6 +606,7 @@ def train(
                 writer.add_scalar("val/psnr", val_psnr, epoch)
                 if val_psnr > best_psnr:
                     best_psnr = val_psnr
+                    best_epoch = epoch
                     _save_checkpoint(
                         output_dir / "best.pth",
                         model,
@@ -590,11 +658,13 @@ def train(
             best_psnr,
             training_config=training_config,
         )
-        print(f"Training complete.  Best val PSNR: {best_psnr:.2f} dB")
+        print(f"Training complete.  Best val PSNR: {best_psnr:.2f} dB  (epoch {best_epoch + 1})")
     finally:
         writer.close()
         if _module_device(model) != original_device:
             model.to(original_device)
+
+    return best_psnr, best_epoch
 
 
 def _validate(
@@ -1283,11 +1353,14 @@ def main() -> None:
     if val_ds is not None and val_loader is not None:
         _log_loader_summary("Val", val_ds, val_loader)
 
-    train(
+    output_dir = Path(args.output)
+    _save_experiment_metadata(output_dir, args, model=model_instance, train_ds=train_ds, val_ds=val_ds)
+
+    best_psnr, best_epoch = train(
         model=model_instance,
         loader=train_loader,
         val_loader=val_loader,
-        output_dir=Path(args.output),
+        output_dir=output_dir,
         epochs=args.epochs,
         lr=args.lr,
         use_amp=not args.no_amp,
@@ -1296,6 +1369,11 @@ def main() -> None:
         color_space=args.color_space,
         scheduler_name=args.scheduler,
         plateau_patience=args.plateau_patience,
+    )
+
+    _save_experiment_metadata(
+        output_dir, args, model=model_instance, train_ds=train_ds, val_ds=val_ds,
+        results={"best_val_psnr": round(best_psnr, 4), "best_epoch": best_epoch + 1},
     )
 
 
