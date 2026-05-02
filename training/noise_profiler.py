@@ -89,7 +89,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 
-def _read_frame(path: Path) -> np.ndarray:
+def _read_frame(path: Path, keep_alpha: bool = False) -> np.ndarray:
     """Load a single image file and return a float32 (H, W, C) array in [0, 1].
 
     EXR files are read via cv2 (preferred — handles HDR float natively) with a
@@ -98,8 +98,8 @@ def _read_frame(path: Path) -> np.ndarray:
     EXR notes:
       - Values are kept as-is (float32, linear).  HDR values above 1.0 are
         valid for render noise residuals and are not clamped.
-      - Alpha channel is dropped if present (RGBA → RGB).
       - cv2 returns BGR; this function converts to RGB.
+      - Alpha channel is kept when *keep_alpha* is True, otherwise dropped.
     """
     if path.suffix.lower() == ".exr":
         img = _read_exr(path)
@@ -111,8 +111,7 @@ def _read_frame(path: Path) -> np.ndarray:
         if img.ndim == 2:
             img = img[:, :, np.newaxis]
 
-    # Drop alpha channel
-    if img.ndim == 3 and img.shape[2] == 4:
+    if img.ndim == 3 and img.shape[2] == 4 and not keep_alpha:
         img = img[:, :, :3]
 
     return img

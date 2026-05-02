@@ -238,8 +238,8 @@ def _load_image(path: Path) -> np.ndarray:
             img = np.stack([img, img, img], axis=-1)
         elif img.shape[2] == 1:
             img = np.repeat(img, 3, axis=2)
-        elif img.shape[2] > 3:
-            img = img[:, :, :3]
+        elif img.shape[2] > 4:
+            img = img[:, :, :4]
         return img
 
     with Image.open(path) as pil_img:
@@ -278,6 +278,16 @@ def _load_exr_image(path: Path) -> np.ndarray:
 def _hwc_to_tensor(arr: np.ndarray) -> Tensor:
     """Convert (H, W, C) float32 numpy array to (C, H, W) float32 Tensor."""
     return torch.from_numpy(arr.transpose(2, 0, 1))
+
+
+def _strip_alpha(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+    """Split (H, W, 4) into (H, W, 3) RGB and (H, W, 1) alpha.
+
+    Returns (arr, None) unchanged when no alpha channel is present.
+    """
+    if arr.shape[2] == 4:
+        return arr[:, :, :3], arr[:, :, 3:4]
+    return arr, None
 
 
 def _random_crop(
@@ -435,8 +445,12 @@ class PatchDataset(Dataset):
             patch = _crop_image(img, self._patch_size, self._crop_mode)
         if self._augment:
             patch = _augment(patch)
-        clean = _hwc_to_tensor(patch)  # (C, H, W)
+        rgb, alpha = _strip_alpha(patch)
+        clean = _hwc_to_tensor(rgb)  # (3, H, W)
         noisy, clean, sigma_map = self._noise_gen(clean)
+        if alpha is not None:
+            alpha_t = _hwc_to_tensor(alpha)  # (1, H, W)
+            noisy = clean + (noisy - clean) * alpha_t
         return noisy, clean, sigma_map
 
     @property
@@ -629,8 +643,12 @@ class VideoSequenceDataset(Dataset):
             if rot_k:
                 patch = np.rot90(patch, k=rot_k)
             patch = np.ascontiguousarray(patch)
-            clean_t = _hwc_to_tensor(patch)
+            rgb, alpha = _strip_alpha(patch)
+            clean_t = _hwc_to_tensor(rgb)
             noisy_t, clean_t, sigma_t = noise_gen(clean_t)
+            if alpha is not None:
+                alpha_t = _hwc_to_tensor(alpha)
+                noisy_t = clean_t + (noisy_t - clean_t) * alpha_t
             noisy_frames.append(noisy_t)
             clean_frames.append(clean_t)
             sigma_frames.append(sigma_t)
@@ -895,8 +913,10 @@ class PairedPatchDataset(Dataset):
                 clean_patch = np.rot90(clean_patch, k=rot_k)
                 noisy_patch = np.rot90(noisy_patch, k=rot_k)
 
-        clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_patch))
-        noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_patch))
+        clean_rgb, _ = _strip_alpha(clean_patch)
+        noisy_rgb, _ = _strip_alpha(noisy_patch)
+        clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_rgb))
+        noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_rgb))
         noise_residual = noisy_t - clean_t
         sigma_map = _local_std_sigma(noise_residual, window=self._sigma_window)
         return noisy_t, clean_t, sigma_map
@@ -1159,8 +1179,10 @@ class PairedVideoSequenceDataset(Dataset):
                 clean_patch = np.rot90(clean_patch, k=rot_k)
                 noisy_patch = np.rot90(noisy_patch, k=rot_k)
 
-            clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_patch))
-            noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_patch))
+            clean_rgb, _ = _strip_alpha(clean_patch)
+            noisy_rgb, _ = _strip_alpha(noisy_patch)
+            clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_rgb))
+            noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_rgb))
             sigma_t = _local_std_sigma(noisy_t - clean_t, window=self._sigma_window)
 
             clean_frames.append(clean_t)

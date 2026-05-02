@@ -57,15 +57,24 @@ def apply_pool_to_image(
 ) -> np.ndarray:
     """Tile random patches from *pool* across *img* using *mode*.
 
+    If *img* has an alpha channel (H, W, 4), noise is premultiplied by alpha
+    so fully transparent pixels receive no noise.  The alpha channel is
+    preserved unchanged in the output.
+
     Args:
-        img:        (H, W, C) float32 clean image.
+        img:        (H, W, C) float32 clean image — C=3 (RGB) or C=4 (RGBA).
         pool:       (N, C, pH, pW) float32 patch pool.
         mode:       Blend mode — add | screen | overlay | soft_light.
         patch_size: Tile size used when tiling the image.
 
     Returns:
-        (H, W, C) float32 noisy image.
+        (H, W, C) float32 noisy image, same channel count as *img*.
     """
+    alpha = None
+    if img.shape[2] == 4:
+        alpha = img[:, :, 3:4]
+        img = img[:, :, :3]
+
     h, w, c = img.shape
     n, pc, ph, pw = pool.shape
     result = img.copy()
@@ -94,19 +103,38 @@ def apply_pool_to_image(
             if pc != c:
                 patch = patch[:, :, :c] if pc > c else patch.mean(axis=2, keepdims=True).repeat(c, axis=2)
 
-            result[y:y2, x:x2, :] = _blend(result[y:y2, x:x2, :], patch, mode)
+            tile = result[y:y2, x:x2, :]
+            blended = _blend(tile, patch, mode)
+            if alpha is not None:
+                blended = tile + (blended - tile) * alpha[y:y2, x:x2, :]
+            result[y:y2, x:x2, :] = blended
+
+    if alpha is not None:
+        result = np.concatenate([result, alpha], axis=2)
 
     return result
 
 
 def load_image(path: Path) -> np.ndarray:
-    """Load any image (PNG, EXR, TIFF, …) as float32 (H, W, C) in [0, 1]."""
+    """Load any image (PNG, EXR, TIFF, …) as float32 (H, W, C).
+
+    Alpha channel is preserved when present (returns H, W, 4 for RGBA).
+    """
     from noise_profiler import _read_frame
-    return _read_frame(path)
+    return _read_frame(path, keep_alpha=True)
 
 
 def save_image(img: np.ndarray, path: Path) -> None:
-    """Save a float32 (H, W, C) image.  Clamps to [0, 1] before writing."""
+    """Save a float32 (H, W, C) image.
+
+    EXR: written at full float32 precision, values not clamped.
+    PNG/JPG: clamped to [0, 1] and converted to uint8.
+    TIFF: clamped to [0, 1] and converted to uint16.
+    """
+    if path.suffix.lower() == ".exr":
+        _save_exr(img, path)
+        return
+
     import imageio.v3 as iio
     out = np.clip(img, 0.0, 1.0)
     if path.suffix.lower() in (".png", ".jpg", ".jpeg"):
@@ -114,6 +142,65 @@ def save_image(img: np.ndarray, path: Path) -> None:
     elif path.suffix.lower() in (".tif", ".tiff"):
         out = (out * 65535.0).astype(np.uint16)
     iio.imwrite(str(path), out)
+
+
+def _save_exr(img: np.ndarray, path: Path) -> None:
+    """Write a float32 (H, W, C) array to an EXR file.
+
+    Tries cv2, then OpenEXR Python package, then imageio opencv plugin.
+    """
+    errors: list[str] = []
+
+    _CHANNEL_NAMES = ("R", "G", "B", "A")
+
+    try:
+        import cv2
+        if img.shape[2] == 3:
+            out = img[:, :, ::-1].copy()          # RGB → BGR
+        elif img.shape[2] == 4:
+            out = img[:, :, [2, 1, 0, 3]].copy()  # RGBA → BGRA
+        else:
+            out = img
+        ok = cv2.imwrite(str(path), out)
+        if not ok:
+            raise RuntimeError("cv2.imwrite returned False")
+        return
+    except Exception as e:
+        errors.append(f"cv2: {e}")
+
+    try:
+        import OpenEXR
+        import Imath
+        h, w, c = img.shape
+        names = _CHANNEL_NAMES[:c]
+        header = OpenEXR.Header(w, h)
+        pt = Imath.PixelType(Imath.PixelType.FLOAT)
+        header["channels"] = {ch: Imath.Channel(pt) for ch in names}
+        exr = OpenEXR.OutputFile(str(path), header)
+        exr.writePixels({
+            ch: img[:, :, i].astype(np.float32).tobytes()
+            for i, ch in enumerate(names)
+        })
+        exr.close()
+        return
+    except Exception as e:
+        errors.append(f"OpenEXR: {e}")
+
+    try:
+        import imageio.v3 as iio
+        iio.imwrite(str(path), img, plugin="opencv")
+        return
+    except Exception as e:
+        errors.append(f"imageio[opencv]: {e}")
+
+    raise RuntimeError(
+        f"Cannot write EXR file {path.name} — no working backend found.\n"
+        "Install one of:\n"
+        "  uv add opencv-python\n"
+        "  uv add OpenEXR\n"
+        "  uv add imageio[opencv]\n"
+        f"Attempted backends: {'; '.join(errors)}"
+    )
 
 
 def side_by_side(a: np.ndarray, b: np.ndarray) -> np.ndarray:
