@@ -80,7 +80,7 @@ STAGE3_LOSS="${STAGE3_LOSS:-l1}"
 
 COLOR_SPACE="${COLOR_SPACE:-linear}"
 
-SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-plateau}"
+SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-none}"
 SPATIAL_PLATEAU_PATIENCE="${SPATIAL_PLATEAU_PATIENCE:-20}"
 STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-plateau}"
 STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-20}"
@@ -95,10 +95,16 @@ VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-3}"
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
 SKIP_STAGE2="${SKIP_STAGE2:-0}"
 SKIP_STAGE3="${SKIP_STAGE3:-0}"
+RESUME="${RESUME:-0}"
 
 # ---------------------------------------------------------------------------
 
 cd "$TRAINING_DIR"
+
+_resume_flag() {
+  local ckpt="$1/last.pth"
+  [[ "$RESUME" == "1" && -f "$ckpt" ]] && echo "--resume $ckpt"
+}
 
 echo "========================================================"
 echo "  NAFNetCascade — synthetic patch pool training"
@@ -143,7 +149,8 @@ else
     --val-grid-size 3 \
     --output "$STAGE1_OUTPUT" \
     --workers "$WORKERS" \
-    --epochs "$SPATIAL_EPOCHS"
+    --epochs "$SPATIAL_EPOCHS" \
+    $(_resume_flag "$STAGE1_OUTPUT")
 fi
 
 # ---------------------------------------------------------------------------
@@ -182,7 +189,8 @@ else
     --freeze-spatial \
     --output "$STAGE2_OUTPUT" \
     --workers "$WORKERS" \
-    --epochs "$STAGE2_EPOCHS"
+    --epochs "$STAGE2_EPOCHS" \
+    $(_resume_flag "$STAGE2_OUTPUT")
 fi
 
 # ---------------------------------------------------------------------------
@@ -217,7 +225,7 @@ else
     --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
     --val-crop-mode grid \
     --val-grid-size 3 \
-    --resume "$STAGE2_OUTPUT/best.pth" \
+    --resume "$([[ "$RESUME" == "1" && -f "$STAGE3_OUTPUT/last.pth" ]] && echo "$STAGE3_OUTPUT/last.pth" || echo "$STAGE2_OUTPUT/best.pth")" \
     --output "$STAGE3_OUTPUT" \
     --workers "$WORKERS" \
     --epochs "$STAGE3_EPOCHS"
