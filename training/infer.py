@@ -315,7 +315,8 @@ def denoise_temporal_frame(
 
 
 def _load_image(path: Path) -> np.ndarray:
-    return _load_dataset_image(path)
+    img = _load_dataset_image(path)
+    return img[:, :, :3] if img.shape[2] > 3 else img
 
 
 def _load_alpha(path: Path) -> Optional[np.ndarray]:
