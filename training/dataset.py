@@ -238,6 +238,8 @@ def _load_image(path: Path) -> np.ndarray:
             img = np.stack([img, img, img], axis=-1)
         elif img.shape[2] == 1:
             img = np.repeat(img, 3, axis=2)
+        elif img.shape[2] == 4:
+            return img  # keep RGBA — alpha used for noise masking in __getitem__
         elif img.shape[2] > 4:
             img = img[:, :, :4]
         return img
@@ -280,14 +282,22 @@ def _hwc_to_tensor(arr: np.ndarray) -> Tensor:
     return torch.from_numpy(arr.transpose(2, 0, 1))
 
 
-def _strip_alpha(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
-    """Split (H, W, 4) into (H, W, 3) RGB and (H, W, 1) alpha.
+def _apply_alpha_mask(noisy: Tensor, clean: Tensor, patch: np.ndarray) -> Tensor:
+    """Premultiply noise contribution by alpha so transparent pixels stay clean.
 
-    Returns (arr, None) unchanged when no alpha channel is present.
+    When *patch* is RGBA (H, W, 4), the noise added by the noise generator is
+    scaled by alpha so alpha=0 areas receive no noise.  Returns the masked
+    noisy tensor; clean and sigma are unchanged.
     """
-    if arr.shape[2] == 4:
-        return arr[:, :, :3], arr[:, :, 3:4]
-    return arr, None
+    if patch.shape[2] != 4:
+        return noisy
+    alpha = torch.from_numpy(patch[:, :, 3:4].transpose(2, 0, 1))  # (1, H, W)
+    return clean + (noisy - clean) * alpha
+
+
+def _rgb(patch: np.ndarray) -> np.ndarray:
+    """Return the RGB channels of a patch, dropping alpha if present."""
+    return patch[:, :, :3] if patch.shape[2] == 4 else patch
 
 
 def _random_crop(
@@ -445,12 +455,9 @@ class PatchDataset(Dataset):
             patch = _crop_image(img, self._patch_size, self._crop_mode)
         if self._augment:
             patch = _augment(patch)
-        rgb, alpha = _strip_alpha(patch)
-        clean = _hwc_to_tensor(rgb)  # (3, H, W)
+        clean = _hwc_to_tensor(_rgb(patch))
         noisy, clean, sigma_map = self._noise_gen(clean)
-        if alpha is not None:
-            alpha_t = _hwc_to_tensor(alpha)  # (1, H, W)
-            noisy = clean + (noisy - clean) * alpha_t
+        noisy = _apply_alpha_mask(noisy, clean, patch)
         return noisy, clean, sigma_map
 
     @property
@@ -643,12 +650,9 @@ class VideoSequenceDataset(Dataset):
             if rot_k:
                 patch = np.rot90(patch, k=rot_k)
             patch = np.ascontiguousarray(patch)
-            rgb, alpha = _strip_alpha(patch)
-            clean_t = _hwc_to_tensor(rgb)
+            clean_t = _hwc_to_tensor(_rgb(patch))
             noisy_t, clean_t, sigma_t = noise_gen(clean_t)
-            if alpha is not None:
-                alpha_t = _hwc_to_tensor(alpha)
-                noisy_t = clean_t + (noisy_t - clean_t) * alpha_t
+            noisy_t = _apply_alpha_mask(noisy_t, clean_t, patch)
             noisy_frames.append(noisy_t)
             clean_frames.append(clean_t)
             sigma_frames.append(sigma_t)
@@ -913,10 +917,8 @@ class PairedPatchDataset(Dataset):
                 clean_patch = np.rot90(clean_patch, k=rot_k)
                 noisy_patch = np.rot90(noisy_patch, k=rot_k)
 
-        clean_rgb, _ = _strip_alpha(clean_patch)
-        noisy_rgb, _ = _strip_alpha(noisy_patch)
-        clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_rgb))
-        noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_rgb))
+        clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_patch))
+        noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_patch))
         noise_residual = noisy_t - clean_t
         sigma_map = _local_std_sigma(noise_residual, window=self._sigma_window)
         return noisy_t, clean_t, sigma_map
@@ -1179,10 +1181,8 @@ class PairedVideoSequenceDataset(Dataset):
                 clean_patch = np.rot90(clean_patch, k=rot_k)
                 noisy_patch = np.rot90(noisy_patch, k=rot_k)
 
-            clean_rgb, _ = _strip_alpha(clean_patch)
-            noisy_rgb, _ = _strip_alpha(noisy_patch)
-            clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_rgb))
-            noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_rgb))
+            clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_patch))
+            noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_patch))
             sigma_t = _local_std_sigma(noisy_t - clean_t, window=self._sigma_window)
 
             clean_frames.append(clean_t)

@@ -152,12 +152,12 @@ def _read_exr(path: Path) -> np.ndarray:
         w = dw.max.x - dw.min.x + 1
         h = dw.max.y - dw.min.y + 1
         channels = list(header["channels"].keys())
-        _rgb_order = {"R": 0, "G": 1, "B": 2}
-        rgb = sorted([c for c in channels if c in _rgb_order], key=lambda c: _rgb_order[c])
-        if not rgb:
-            rgb = channels[:3]
+        _rgba_order = {"R": 0, "G": 1, "B": 2, "A": 3}
+        rgba = sorted([c for c in channels if c in _rgba_order], key=lambda c: _rgba_order[c])
+        if not rgba:
+            rgba = channels[:4]
         pt = Imath.PixelType(Imath.PixelType.FLOAT)
-        data = [np.frombuffer(exr.channel(c, pt), dtype=np.float32).reshape(h, w) for c in rgb]
+        data = [np.frombuffer(exr.channel(c, pt), dtype=np.float32).reshape(h, w) for c in rgba]
         img = np.stack(data, axis=-1)  # (H, W, C)
         return img
     except Exception as e:
@@ -170,7 +170,9 @@ def _read_exr(path: Path) -> np.ndarray:
         if img.ndim == 2:
             img = img[:, :, np.newaxis]
         elif img.shape[2] == 3:
-            img = img[:, :, ::-1].copy()  # BGR → RGB
+            img = img[:, :, ::-1].copy()        # BGR → RGB
+        elif img.shape[2] == 4:
+            img = img[:, :, [2, 1, 0, 3]].copy()  # BGRA → RGBA
         return img
     except Exception as e:
         errors.append(f"imageio[opencv]: {e}")
