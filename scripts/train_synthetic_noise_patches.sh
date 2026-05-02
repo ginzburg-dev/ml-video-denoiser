@@ -16,7 +16,7 @@
 #   SKIP_STAGE1=1 SPATIAL_WEIGHTS=/path/to/spatial/best.pth ./scripts/train.sh
 #   SKIP_STAGE2=1 ./scripts/train.sh   # requires STAGE2_OUTPUT to already exist
 #   SKIP_STAGE3=1 ./scripts/train.sh   # stop after stage 2
-
+# EXP_NAME=synth_cg_dataset0 ./scripts/train_synthetic_noise_patches.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,7 +26,7 @@ TRAINING_DIR="$ROOT_DIR/training"
 # Data paths
 # ---------------------------------------------------------------------------
 NOISE_PATTERNS="${NOISE_PATTERNS:-/mnt/c/Ginzburg/Production/dataset/noise_patterns/npz}"
-DATA_CLEAN="${DATA_CLEAN:-$HOME/data/tgb_train/TGB_training/clean_sequences}"
+DATA_CLEAN="${DATA_CLEAN:-$HOME/data/tgb_train/TGB_training/train_clean_lit}"
 if [[ -z "${NOISE_PATCHES:-}" ]]; then
   NOISE_PATCHES=(
     "$NOISE_PATTERNS/cg_mg_tgb_medium_v001/npz/cg_mg_tgb_medium_v001_q01.npz:add:1"
@@ -164,7 +164,7 @@ uv run python training.py \
   --patch-size "$PATCH_SIZE" \
   --patches-per-image "$PATCHES_PER_IMAGE" \
   --data "$DATA_CLEAN" \
-  --patch-pool "${NOISE_PATCHES[@]}" \
+  --patch-pool "$NOISE_PATCHES" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
   --random-temporal-windows \
@@ -208,7 +208,7 @@ uv run python training.py \
   --patch-size "$PATCH_SIZE" \
   --patches-per-image "$PATCHES_PER_IMAGE" \
   --data "$DATA_CLEAN" \
-  --patch-pool "${NOISE_PATCHES[@]}" \
+  --patch-pool "$NOISE_PATCHES" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
   --random-temporal-windows \
