@@ -917,8 +917,8 @@ class PairedPatchDataset(Dataset):
                 clean_patch = np.rot90(clean_patch, k=rot_k)
                 noisy_patch = np.rot90(noisy_patch, k=rot_k)
 
-        clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_patch))
-        noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_patch))
+        clean_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(clean_patch)))
+        noisy_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(noisy_patch)))
         noise_residual = noisy_t - clean_t
         sigma_map = _local_std_sigma(noise_residual, window=self._sigma_window)
         return noisy_t, clean_t, sigma_map
@@ -1181,8 +1181,8 @@ class PairedVideoSequenceDataset(Dataset):
                 clean_patch = np.rot90(clean_patch, k=rot_k)
                 noisy_patch = np.rot90(noisy_patch, k=rot_k)
 
-            clean_t = _hwc_to_tensor(np.ascontiguousarray(clean_patch))
-            noisy_t = _hwc_to_tensor(np.ascontiguousarray(noisy_patch))
+            clean_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(clean_patch)))
+            noisy_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(noisy_patch)))
             sigma_t = _local_std_sigma(noisy_t - clean_t, window=self._sigma_window)
 
             clean_frames.append(clean_t)
