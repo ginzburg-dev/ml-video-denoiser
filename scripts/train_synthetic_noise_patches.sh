@@ -164,7 +164,7 @@ uv run python training.py \
   --patch-size "$PATCH_SIZE" \
   --patches-per-image "$PATCHES_PER_IMAGE" \
   --data "$DATA_CLEAN" \
-  --patch-pool "$NOISE_PATCHES" \
+  --patch-pool "${NOISE_PATCHES[@]}" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
   --random-temporal-windows \
@@ -208,7 +208,7 @@ uv run python training.py \
   --patch-size "$PATCH_SIZE" \
   --patches-per-image "$PATCHES_PER_IMAGE" \
   --data "$DATA_CLEAN" \
-  --patch-pool "$NOISE_PATCHES" \
+  --patch-pool "${NOISE_PATCHES[@]}" \
   --val-clean "$VAL_CLEAN" \
   --val-noisy "$VAL_NOISY" \
   --random-temporal-windows \
