@@ -875,11 +875,33 @@ def build_parser() -> argparse.ArgumentParser:
         default="mixed",
         help="Synthetic noise model to use for clean-only training data.",
     )
-    parser.add_argument("--patch-pool", default=None, metavar="PATH",
-                        help="Path to real noise patch pool (.npz).")
+    parser.add_argument("--patch-pool", nargs="+", default=None, metavar="PATH[:MODE[:WEIGHT]]",
+                        help=(
+                            "Real noise patch pool(s).  Format: PATH, PATH:MODE, or "
+                            "PATH:MODE:WEIGHT.  MODE is add|screen|overlay|soft_light "
+                            "(default: add).  WEIGHT controls sampling frequency "
+                            "(default: 1.0).  Example: dark.npz:add:3 grain.npz:overlay:1"
+                        ))
     parser.add_argument("--noise-profile", default=None, metavar="PATH",
                         help="Path to calibrated noise profile (.json).")
     return parser
+
+
+def _parse_pool_specs(
+    specs: list[str],
+) -> list[tuple[str, str, float]]:
+    """Parse pool spec strings into (path, mode, weight) tuples.
+
+    Accepted formats:  path  |  path:mode  |  path:mode:weight
+    """
+    result = []
+    for spec in specs:
+        parts = spec.split(":")
+        path = parts[0]
+        mode = parts[1] if len(parts) > 1 else "add"
+        weight = float(parts[2]) if len(parts) > 2 else 1.0
+        result.append((path, mode, weight))
+    return result
 
 
 def _make_noise_generator(
@@ -887,18 +909,22 @@ def _make_noise_generator(
     parser: argparse.ArgumentParser,
 ):
     """Construct the configured synthetic noise generator."""
+    real_noise_flags = args.patch_pool or args.noise_profile
     if args.noise == "gaussian":
-        if args.patch_pool or args.noise_profile:
+        if real_noise_flags:
             parser.error("--patch-pool and --noise-profile require --noise mixed.")
         return GaussianNoiseGenerator(0.0, 75.0 / 255.0)
 
     if args.noise == "poisson-gaussian":
-        if args.patch_pool or args.noise_profile:
+        if real_noise_flags:
             parser.error("--patch-pool and --noise-profile require --noise mixed.")
         return PoissonGaussianNoiseGenerator()
 
+    patch_pools = _parse_pool_specs(args.patch_pool) if args.patch_pool else None
+
     return MixedNoiseGenerator.default(
-        patch_pool=args.patch_pool, profile_json=args.noise_profile
+        patch_pools=patch_pools,
+        profile_json=args.noise_profile,
     )
 
 

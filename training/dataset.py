@@ -615,6 +615,10 @@ class VideoSequenceDataset(Dataset):
         flip_h = self._augment and random.random() < 0.5
         rot_k = random.randint(0, 3) if self._augment else 0
 
+        # Lock noise source for the whole clip so all frames share the same
+        # pool / ISO — matches real-world behaviour where a clip is one shot.
+        noise_gen = self._noise_gen.for_clip() if hasattr(self._noise_gen, "for_clip") else self._noise_gen
+
         noisy_frames, clean_frames, sigma_frames = [], [], []
         for frame in frames:
             patch = frame if ps is None else frame[top : top + ps, left : left + ps, :]
@@ -626,7 +630,7 @@ class VideoSequenceDataset(Dataset):
                 patch = np.rot90(patch, k=rot_k)
             patch = np.ascontiguousarray(patch)
             clean_t = _hwc_to_tensor(patch)
-            noisy_t, clean_t, sigma_t = self._noise_gen(clean_t)
+            noisy_t, clean_t, sigma_t = noise_gen(clean_t)
             noisy_frames.append(noisy_t)
             clean_frames.append(clean_t)
             sigma_frames.append(sigma_t)
