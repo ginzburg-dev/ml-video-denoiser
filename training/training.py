@@ -106,6 +106,7 @@ from noise_generators import (
     GaussianNoiseGenerator,
     MixedNoiseGenerator,
     PoissonGaussianNoiseGenerator,
+    RealNoiseInjectionGenerator,
 )
 
 
@@ -871,9 +872,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Synthetic noise options
     parser.add_argument(
         "--noise",
-        choices=["gaussian", "poisson-gaussian", "mixed"],
+        choices=["gaussian", "poisson-gaussian", "real", "mixed"],
         default="mixed",
-        help="Synthetic noise model to use for clean-only training data.",
+        help="Noise model for clean-only training data. "
+             "'real' uses patch pools only (requires --patch-pool). "
+             "'mixed' combines synthetic and real sources.",
     )
     parser.add_argument("--patch-pool", nargs="+", default=None, metavar="PATH[:MODE[:WEIGHT]]",
                         help=(
@@ -909,19 +912,22 @@ def _make_noise_generator(
     parser: argparse.ArgumentParser,
 ):
     """Construct the configured synthetic noise generator."""
-    real_noise_flags = args.patch_pool or args.noise_profile
     if args.noise == "gaussian":
-        if real_noise_flags:
-            parser.error("--patch-pool and --noise-profile require --noise mixed.")
+        if args.patch_pool or args.noise_profile:
+            parser.error("--patch-pool and --noise-profile require --noise real or --noise mixed.")
         return GaussianNoiseGenerator(0.0, 75.0 / 255.0)
 
     if args.noise == "poisson-gaussian":
-        if real_noise_flags:
-            parser.error("--patch-pool and --noise-profile require --noise mixed.")
+        if args.patch_pool or args.noise_profile:
+            parser.error("--patch-pool and --noise-profile require --noise real or --noise mixed.")
         return PoissonGaussianNoiseGenerator()
 
-    patch_pools = _parse_pool_specs(args.patch_pool) if args.patch_pool else None
+    if args.noise == "real":
+        if not args.patch_pool:
+            parser.error("--noise real requires --patch-pool.")
+        return RealNoiseInjectionGenerator(_parse_pool_specs(args.patch_pool))
 
+    patch_pools = _parse_pool_specs(args.patch_pool) if args.patch_pool else None
     return MixedNoiseGenerator.default(
         patch_pools=patch_pools,
         profile_json=args.noise_profile,

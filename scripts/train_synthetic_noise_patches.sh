@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
-# train.sh — Full three-stage NAFNet training pipeline.
+# train_synthetic_noise_patches.sh — Three-stage NAFNetCascade training with real noise patches.
 #
-# Stage 1  Spatial      NAFNet spatial denoiser                    (plateau)
-# Stage 2  Temporal     Load stage-1 weights, freeze spatial, train temporal_mix only
-# Stage 3  Fine-tune    Unfreeze all, joint fine-tune at lower LR (plateau)
+# Stage 1  Spatial      NAFNet spatial denoiser on clean sequences + patch pool noise
+# Stage 2  Cascade      Load stage-1 weights, freeze spatial, train temporal stage only
+# Stage 3  Fine-tune    Unfreeze all, joint fine-tune at lower LR
 #
 # Usage:
-#   ./scripts/train.sh
+#   EXP_NAME=synth_cg_dataset0 ./scripts/train_synthetic_noise_patches.sh
 #
 # Override any variable on the command line, e.g.:
-#   WORKERS=4 SIZE=small ./scripts/train.sh
-#   PAIRED_CLEAN=/my/clean PAIRED_NOISY=/my/noisy ./scripts/train.sh
+#   WORKERS=4 SIZE=small ./scripts/train_synthetic_noise_patches.sh
 #
 # Skip individual stages:
-#   SKIP_STAGE1=1 SPATIAL_WEIGHTS=/path/to/spatial/best.pth ./scripts/train.sh
-#   SKIP_STAGE2=1 ./scripts/train.sh   # requires STAGE2_OUTPUT to already exist
-#   SKIP_STAGE3=1 ./scripts/train.sh   # stop after stage 2
-# EXP_NAME=synth_cg_dataset0 ./scripts/train_synthetic_noise_patches.sh
+#   SKIP_STAGE1=1 SPATIAL_WEIGHTS=/path/to/spatial/best.pth ./scripts/train_synthetic_noise_patches.sh
+#   SKIP_STAGE2=1 ./scripts/train_synthetic_noise_patches.sh
+#   SKIP_STAGE3=1 ./scripts/train_synthetic_noise_patches.sh
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,18 +43,19 @@ VAL_NOISY="${VAL_NOISY:-$HOME/data/tgb_train/TGB_training/val_noisy}"
 # ---------------------------------------------------------------------------
 # Model / architecture
 # ---------------------------------------------------------------------------
-SIZE="${SIZE:-exp048}"          # tiny | small | exp048 | standard | wide
-NUM_FRAMES="${NUM_FRAMES:-3}"   # temporal window (3 = 1 past + ref + 1 future)
-EXP_NAME="${EXP_NAME:-}"        # optional experiment tag, e.g. EXP_NAME=run01
+SIZE="${SIZE:-exp048}"              # tiny | small | exp048 | standard | wide
+NUM_FRAMES="${NUM_FRAMES:-3}"       # temporal window (odd, ≥3)
+TEMPORAL_BASE="${TEMPORAL_BASE:-32}"
+EXP_NAME="${EXP_NAME:-}"
 
 # ---------------------------------------------------------------------------
 # Output paths
 # ---------------------------------------------------------------------------
 _sfx="${EXP_NAME:+_$EXP_NAME}"
-STAGE1_OUTPUT="${STAGE1_OUTPUT:-checkpoints/spatial_${SIZE}${_sfx}}"
+STAGE1_OUTPUT="${STAGE1_OUTPUT:-checkpoints/cascade_spatial_${SIZE}${_sfx}}"
 SPATIAL_WEIGHTS="${SPATIAL_WEIGHTS:-$STAGE1_OUTPUT/best.pth}"
-STAGE2_OUTPUT="${STAGE2_OUTPUT:-checkpoints/temporal_${SIZE}_stage2${_sfx}}"
-STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/temporal_${SIZE}_stage3${_sfx}}"
+STAGE2_OUTPUT="${STAGE2_OUTPUT:-checkpoints/cascade_${SIZE}_stage2${_sfx}}"
+STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/cascade_${SIZE}_stage3${_sfx}}"
 
 # ---------------------------------------------------------------------------
 # Hyperparameters
@@ -66,13 +66,14 @@ PATCH_SIZE="${PATCH_SIZE:-128}"
 PATCHES_PER_IMAGE="${PATCHES_PER_IMAGE:-64}"
 
 SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-150}"
-STAGE2_EPOCHS="${STAGE2_EPOCHS:-250}"
-STAGE3_EPOCHS="${STAGE3_EPOCHS:-100}"
+STAGE2_EPOCHS="${STAGE2_EPOCHS:-100}"
+STAGE3_EPOCHS="${STAGE3_EPOCHS:-50}"
 
 SPATIAL_LR="${SPATIAL_LR:-1e-4}"
-STAGE2_LR="${STAGE2_LR:-1e-4}"   # ~7.5M fresh params (temporal_mix + bottleneck_mix) — run hot
+STAGE2_LR="${STAGE2_LR:-1e-4}"
 STAGE3_LR="${STAGE3_LR:-2e-5}"
 
+NOISE="${NOISE:-real}"
 SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"
 STAGE2_LOSS="${STAGE2_LOSS:-l1}"
 STAGE3_LOSS="${STAGE3_LOSS:-l1}"
@@ -81,14 +82,14 @@ COLOR_SPACE="${COLOR_SPACE:-linear}"
 
 SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-plateau}"
 SPATIAL_PLATEAU_PATIENCE="${SPATIAL_PLATEAU_PATIENCE:-20}"
-STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-plateau}"  # fresh large module — keep LR high until plateau
+STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-plateau}"
 STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-20}"
-STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-plateau}"  # polish phase — drop LR only when val loss stalls
+STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-plateau}"
 STAGE3_PLATEAU_PATIENCE="${STAGE3_PLATEAU_PATIENCE:-20}"
 
-SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-5}"   # 5 random frames/seq/epoch
+SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-5}"
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
-WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-4}"                  # 4 random windows/seq/epoch
+WINDOWS_PER_SEQUENCE="${WINDOWS_PER_SEQUENCE:-4}"
 VAL_WINDOWS_PER_SEQUENCE="${VAL_WINDOWS_PER_SEQUENCE:-3}"
 
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
@@ -100,13 +101,14 @@ SKIP_STAGE3="${SKIP_STAGE3:-0}"
 cd "$TRAINING_DIR"
 
 echo "========================================================"
-echo "  NAFNet three-stage training"
-echo "  Size:       $SIZE"
-echo "  Num frames: $NUM_FRAMES"
-echo "  Experiment: ${EXP_NAME:-<default>}"
-echo "  Stage 1 output:  $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ "$SKIP_STAGE1" == "1" ] && echo " [SKIP]")"
-echo "  Stage 2 output:  $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ "$SKIP_STAGE2" == "1" ] && echo " [SKIP]")"
-echo "  Stage 3 output:  $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ "$SKIP_STAGE3" == "1" ] && echo " [SKIP]")"
+echo "  NAFNetCascade — synthetic patch pool training"
+echo "  Size:           $SIZE"
+echo "  Num frames:     $NUM_FRAMES"
+echo "  Temporal base:  $TEMPORAL_BASE"
+echo "  Experiment:     ${EXP_NAME:-<default>}"
+echo "  Stage 1 output: $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ "$SKIP_STAGE1" == "1" ] && echo " [SKIP]")"
+echo "  Stage 2 output: $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ "$SKIP_STAGE2" == "1" ] && echo " [SKIP]")"
+echo "  Stage 3 output: $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ "$SKIP_STAGE3" == "1" ] && echo " [SKIP]")"
 echo "========================================================"
 
 # ---------------------------------------------------------------------------
@@ -122,12 +124,14 @@ else
     --model spatial \
     --size "$SIZE" \
     --color-space "$COLOR_SPACE" \
+    --noise "$NOISE" \
     --loss "$SPATIAL_LOSS" \
     --scheduler "$SPATIAL_SCHEDULER" \
     --plateau-patience "$SPATIAL_PLATEAU_PATIENCE" \
     --lr "$SPATIAL_LR" \
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
+    --patches-per-image "$PATCHES_PER_IMAGE" \
     --data "$DATA_CLEAN" \
     --patch-pool "${NOISE_PATCHES[@]}" \
     --val-clean "$VAL_CLEAN" \
@@ -143,83 +147,80 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Stage 2 — Temporal mixing only (spatial backbone frozen)
+# Stage 2 — Cascade temporal stage only (spatial frozen)
 # ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE2" == "1" ]]; then
   echo ""
   echo "--- Stage 2 skipped (SKIP_STAGE2=1) ---"
 else
-echo ""
-echo "--- Stage 2: temporal mix (spatial frozen) ---"
-uv run python training.py \
-  --model temporal \
-  --size "$SIZE" \
-  --num-frames "$NUM_FRAMES" \
-  --color-space "$COLOR_SPACE" \
-  --loss "$STAGE2_LOSS" \
-  --scheduler "$STAGE2_SCHEDULER" \
-  --plateau-patience "$STAGE2_PLATEAU_PATIENCE" \
-  --lr "$STAGE2_LR" \
-  --batch-size "$BATCH_SIZE" \
-  --patch-size "$PATCH_SIZE" \
-  --patches-per-image "$PATCHES_PER_IMAGE" \
-  --data "$DATA_CLEAN" \
-  --patch-pool "$NOISE_PATCHES" \
-  --val-clean "$VAL_CLEAN" \
-  --val-noisy "$VAL_NOISY" \
-  --random-temporal-windows \
-  --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
-  --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-  --val-crop-mode grid \
-  --val-grid-size 3 \
-  --spatial-weights "$SPATIAL_WEIGHTS" \
-  --freeze-spatial \
-  --output "$STAGE2_OUTPUT" \
-  --workers "$WORKERS" \
-  --epochs "$STAGE2_EPOCHS"
+  echo ""
+  echo "--- Stage 2: cascade temporal stage (spatial frozen) ---"
+  uv run python training.py \
+    --model cascade \
+    --size "$SIZE" \
+    --num-frames "$NUM_FRAMES" \
+    --temporal-base "$TEMPORAL_BASE" \
+    --color-space "$COLOR_SPACE" \
+    --noise "$NOISE" \
+    --loss "$STAGE2_LOSS" \
+    --scheduler "$STAGE2_SCHEDULER" \
+    --plateau-patience "$STAGE2_PLATEAU_PATIENCE" \
+    --lr "$STAGE2_LR" \
+    --batch-size "$BATCH_SIZE" \
+    --patch-size "$PATCH_SIZE" \
+    --patches-per-image "$PATCHES_PER_IMAGE" \
+    --data "$DATA_CLEAN" \
+    --patch-pool "${NOISE_PATCHES[@]}" \
+    --val-clean "$VAL_CLEAN" \
+    --val-noisy "$VAL_NOISY" \
+    --random-temporal-windows \
+    --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
+    --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
+    --val-crop-mode grid \
+    --val-grid-size 3 \
+    --spatial-weights "$SPATIAL_WEIGHTS" \
+    --freeze-spatial \
+    --output "$STAGE2_OUTPUT" \
+    --workers "$WORKERS" \
+    --epochs "$STAGE2_EPOCHS"
 fi
 
 # ---------------------------------------------------------------------------
-# Stage 3 — Joint fine-tune (all layers, half LR)
-#
-# --resume loads the full model state (spatial + temporal) from stage 2.
-# No --spatial-weights here — that would be redundant and confusing.
-# No --freeze-spatial — all layers train jointly.
-# Optimizer mismatch is expected and handled: stage-2 optimizer was built
-# for frozen params only, so training.py falls back to a fresh optimizer
-# (model weights are still fully restored from the stage-2 checkpoint).
+# Stage 3 — Joint fine-tune (all layers)
 # ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE3" == "1" ]]; then
   echo ""
   echo "--- Stage 3 skipped (SKIP_STAGE3=1) ---"
 else
-echo ""
-echo "--- Stage 3: joint fine-tune ---"
-uv run python training.py \
-  --model temporal \
-  --size "$SIZE" \
-  --num-frames "$NUM_FRAMES" \
-  --color-space "$COLOR_SPACE" \
-  --loss "$STAGE3_LOSS" \
-  --scheduler "$STAGE3_SCHEDULER" \
-  --plateau-patience "$STAGE3_PLATEAU_PATIENCE" \
-  --lr "$STAGE3_LR" \
-  --batch-size "$BATCH_SIZE" \
-  --patch-size "$PATCH_SIZE" \
-  --patches-per-image "$PATCHES_PER_IMAGE" \
-  --data "$DATA_CLEAN" \
-  --patch-pool "$NOISE_PATCHES" \
-  --val-clean "$VAL_CLEAN" \
-  --val-noisy "$VAL_NOISY" \
-  --random-temporal-windows \
-  --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
-  --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
-  --val-crop-mode grid \
-  --val-grid-size 3 \
-  --resume "$STAGE2_OUTPUT/best.pth" \
-  --output "$STAGE3_OUTPUT" \
-  --workers "$WORKERS" \
-  --epochs "$STAGE3_EPOCHS"
+  echo ""
+  echo "--- Stage 3: joint fine-tune ---"
+  uv run python training.py \
+    --model cascade \
+    --size "$SIZE" \
+    --num-frames "$NUM_FRAMES" \
+    --temporal-base "$TEMPORAL_BASE" \
+    --color-space "$COLOR_SPACE" \
+    --noise "$NOISE" \
+    --loss "$STAGE3_LOSS" \
+    --scheduler "$STAGE3_SCHEDULER" \
+    --plateau-patience "$STAGE3_PLATEAU_PATIENCE" \
+    --lr "$STAGE3_LR" \
+    --batch-size "$BATCH_SIZE" \
+    --patch-size "$PATCH_SIZE" \
+    --patches-per-image "$PATCHES_PER_IMAGE" \
+    --data "$DATA_CLEAN" \
+    --patch-pool "${NOISE_PATCHES[@]}" \
+    --val-clean "$VAL_CLEAN" \
+    --val-noisy "$VAL_NOISY" \
+    --random-temporal-windows \
+    --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
+    --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
+    --val-crop-mode grid \
+    --val-grid-size 3 \
+    --resume "$STAGE2_OUTPUT/best.pth" \
+    --output "$STAGE3_OUTPUT" \
+    --workers "$WORKERS" \
+    --epochs "$STAGE3_EPOCHS"
 fi
 
 echo ""
