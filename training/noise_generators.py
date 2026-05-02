@@ -1,15 +1,81 @@
 """Pluggable noise synthesis for training the denoiser.
 
 All generators follow the NoiseGenerator protocol: they accept a clean image
-tensor and return (noisy, clean, sigma_map), where sigma_map encodes the local
-noise standard deviation — used for pixel-weighted loss during training.
+tensor of shape (C, H, W) and return a 3-tuple (noisy, clean, sigma_map) where
+sigma_map encodes the local noise standard deviation — used for pixel-weighted
+loss during training.
 
-Usage:
-    generator = MixedNoiseGenerator.default()
-    noisy, clean, sigma_map = generator(clean_patch)
+Generator overview
+------------------
+GaussianNoiseGenerator
+    Additive white Gaussian noise.  Fast, simple baseline.
 
-    # Real noise injection (requires a patch pool from noise_profiler.py):
-    generator = RealNoiseInjectionGenerator(patch_pool="pools/a7iii_iso3200.npz")
+PoissonGaussianNoiseGenerator
+    Heteroscedastic shot + read noise.  Better match for real sensors,
+    especially in linear-light (RAW) domain.
+
+RealNoiseInjectionGenerator
+    Injects patches sampled from real captured sequences (dark frames, grain
+    plates, render noise, etc.).  Each pool has its own blend mode and weight:
+
+        pools = [
+            ("pools/dark_iso800.npz",  "add",     3.0),   # heavy additive residuals
+            ("pools/dark_iso3200.npz", "add",     1.0),
+            ("pools/grain.npz",        "overlay", 2.0),   # film grain overlay plate
+        ]
+        gen = RealNoiseInjectionGenerator(pools)
+
+    Blend modes
+    ~~~~~~~~~~~
+    add        — noisy = clean + patch           use for zero-mean residuals
+                                                  (--save-patches default)
+    screen     — noisy = 1 - (1-clean)(1-patch)  brightening grain / halation
+    overlay    — signal-dependent; grain is       use for 50 %-grey grain plates
+                 strongest in midtones            (--save-patches --no-mean-subtract)
+    soft_light — gentler overlay (Pegtop)         subtle grain
+
+    Pool weights control how often each pool is sampled relative to the others.
+    Values are arbitrary positive numbers — they do not need to sum to 1.
+
+    Pools are built with noise_profiler.py — see that module's docstring for
+    capture and extraction instructions.
+
+RealRAWNoiseGenerator
+    Calibrated Poisson-Gaussian noise from a JSON profile produced by
+    noise_profiler.py Mode 1.  Fitted K and sigma_r per ISO.
+
+CameraNoiseGenerator
+    ISO-parameterised Poisson-Gaussian with row-banding fixed-pattern noise.
+    Designed for temporal clips: call for_clip() once per clip to hold the
+    same ISO and fixed-pattern across all frames.
+
+MixedNoiseGenerator
+    Randomly selects among any combination of the above per training sample.
+    MixedNoiseGenerator.default() is the recommended entry point and wires
+    in whichever sources you provide.
+
+Typical usage
+-------------
+    # Synthetic only (no real data)
+    gen = MixedNoiseGenerator.default()
+
+    # With real noise pools
+    gen = MixedNoiseGenerator.default(
+        patch_pools=[
+            ("pools/dark_iso3200.npz", "add",     2.0),
+            ("pools/grain.npz",        "overlay", 1.0),
+        ],
+    )
+
+    noisy, clean, sigma_map = gen(clean_patch)  # clean_patch: (C, H, W) float32
+
+CLI (training.py)
+-----------------
+    --patch-pool PATH[:MODE[:WEIGHT]] [...]
+
+    Examples:
+        --patch-pool pools/dark.npz
+        --patch-pool pools/dark.npz:add:3 pools/grain.npz:overlay:1
 """
 
 import json
@@ -122,46 +188,136 @@ class PoissonGaussianNoiseGenerator:
 
 
 # ---------------------------------------------------------------------------
+# Blend modes
+# ---------------------------------------------------------------------------
+
+_BLEND_MODES: frozenset[str] = frozenset({"add", "screen", "overlay", "soft_light"})
+
+
+def _apply_blend(clean: Tensor, patch: Tensor, mode: str) -> Tensor:
+    """Apply *patch* onto *clean* using the given blend mode.
+
+    Modes:
+        add        — clean + patch  (patch is a zero-mean residual)
+        screen     — 1 - (1-clean)(1-patch)
+        overlay    — contrast-enhancing; signal-dependent grain strength
+        soft_light — gentler overlay (Pegtop formula)
+    """
+    if mode == "add":
+        return clean + patch
+    if mode == "screen":
+        return 1.0 - (1.0 - clean) * (1.0 - patch)
+    if mode == "overlay":
+        return torch.where(
+            clean < 0.5,
+            2.0 * clean * patch,
+            1.0 - 2.0 * (1.0 - clean) * (1.0 - patch),
+        )
+    if mode == "soft_light":
+        return (1.0 - 2.0 * patch) * clean ** 2 + 2.0 * patch * clean
+    raise ValueError(f"Unknown blend mode {mode!r}. Choose from: {sorted(_BLEND_MODES)}")
+
+
+# ---------------------------------------------------------------------------
 # Real noise injection
 # ---------------------------------------------------------------------------
 
 
 class RealNoiseInjectionGenerator:
-    """Injects authentic noise patches sampled from dark-frame recordings.
+    """Injects authentic noise patches sampled from real captured sequences.
 
-    Instead of synthesising noise mathematically this generator samples actual
-    zero-mean noise residuals captured with a real camera (lens cap on).
-    This preserves authentic noise structure that parametric models miss:
-    banding, hot pixels, fixed-pattern remnants, chroma correlation, and
-    sensor anisotropy.
+    Each pool entry is (path, mode, weight).  On each call one pool is chosen
+    by weighted random selection, a patch is cropped, and the blend mode applied.
 
-    The patch pool is produced by noise_profiler.py:
+    Pools are produced by noise_profiler.py:
 
-        uv run python noise_profiler.py \\
-            --dark dark_sequence/*.png \\
-            --save-patches pools/camera_iso3200.npz
+        # Additive residuals — default, subtracts temporal mean
+        python noise_profiler.py --dark dark/*.png --save-patches pools/dark.npz
+
+        # Overlay grain plate — raw pixel values, no mean subtraction
+        python noise_profiler.py --dark grain/*.png --no-mean-subtract \\
+            --save-patches pools/grain.npz
+
+        gen = RealNoiseInjectionGenerator([
+            ("pools/dark_iso800.npz",  "add",     3.0),
+            ("pools/dark_iso3200.npz", "add",     1.0),
+            ("pools/grain.npz",        "overlay", 2.0),
+        ])
 
     Args:
-        patch_pool: Path to an .npz file produced by noise_profiler.py.
-            Must contain an array keyed ``"residuals"`` with shape
-            (N, H, W, C) of type float32, zero-mean per temporal axis.
-        sigma_window: Kernel size for the local sliding-window std estimate
-            used to build sigma_map.  Larger values are smoother.
+        pools: List of (npz_path, blend_mode, weight) triples.  weight controls
+               relative sampling frequency; values don't need to sum to 1.
+               blend_mode is one of ``"add"``, ``"screen"``, ``"overlay"``,
+               ``"soft_light"``.  A bare string path defaults to add / weight 1.
+        sigma_window: Kernel size for the local std estimate used in sigma_map.
     """
 
-    def __init__(self, patch_pool: str, sigma_window: int = 9) -> None:
-        data = np.load(patch_pool)
-        # residuals: (N, H, W, C) → convert to (N, C, H, W) for easy cropping
-        residuals = data["residuals"].astype(np.float32)
-        if residuals.ndim == 4 and residuals.shape[-1] in (1, 3, 4):
-            residuals = residuals.transpose(0, 3, 1, 2)
-        self._pool = torch.from_numpy(residuals)  # (N, C, H, W)
+    def __init__(
+        self,
+        pools: str | list[str] | list[tuple[str, str, float]],
+        sigma_window: int = 9,
+    ) -> None:
+        if isinstance(pools, str):
+            specs: list[tuple[str, str, float]] = [(pools, "add", 1.0)]
+        elif pools and isinstance(pools[0], str):
+            specs = [(p, "add", 1.0) for p in pools]  # type: ignore[arg-type]
+        else:
+            specs = pools  # type: ignore[assignment]
+
+        self._pools: list[Tensor] = []
+        self._modes: list[str] = []
+        self._weights: list[float] = []
+        for path, mode, weight in specs:
+            data = np.load(path)
+            residuals = data["residuals"].astype(np.float32)
+            if residuals.ndim == 4 and residuals.shape[-1] in (1, 3, 4):
+                residuals = residuals.transpose(0, 3, 1, 2)
+            self._pools.append(torch.from_numpy(residuals))
+            self._modes.append(mode)
+            self._weights.append(weight)
+        self._sigma_window = sigma_window
+
+    def for_clip(self) -> "_LockedPoolApplier":
+        """Return a clip-scoped applier with the pool choice locked for all frames.
+
+        Call once per temporal window; reuse the returned object for every frame
+        in that clip.  This ensures all frames share the same noise source and
+        blend mode, matching real-world behaviour where a clip is shot at a fixed
+        ISO / grain plate pass.
+
+        Spatial crop position is still randomised per frame — only the pool
+        selection is locked.
+        """
+        (i,) = random.choices(range(len(self._pools)), weights=self._weights, k=1)
+        return _LockedPoolApplier(self._pools[i], self._modes[i], self._sigma_window)
+
+    def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Pick a weighted-random pool, crop a patch, blend onto *clean*."""
+        return self.for_clip()(clean)
+
+    def _local_std(self, x: Tensor) -> Tensor:
+        k = self._sigma_window
+        pad = k // 2
+        x_pad = F.pad(x, (pad, pad, pad, pad), mode="reflect")
+        patches = x_pad.unfold(2, k, 1).unfold(3, k, 1)
+        var = patches.var(dim=(-2, -1), unbiased=False)
+        return var.sqrt().squeeze(0)
+
+
+class _LockedPoolApplier:
+    """Single-pool noise applier with a fixed pool index for a temporal clip.
+
+    Do not instantiate directly — use RealNoiseInjectionGenerator.for_clip().
+    """
+
+    def __init__(self, pool: Tensor, mode: str, sigma_window: int) -> None:
+        self._pool = pool
+        self._mode = mode
         self._sigma_window = sigma_window
 
     def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """Sample a real noise patch, add to *clean*, return (noisy, clean, sigma_map)."""
-        _, c, h, w = clean.shape if clean.ndim == 4 else (1, *clean.shape)
         n, pc, ph, pw = self._pool.shape
+        c, h, w = clean.shape[-3], clean.shape[-2], clean.shape[-1]
 
         if ph < h or pw < w:
             raise ValueError(
@@ -169,29 +325,26 @@ class RealNoiseInjectionGenerator:
                 "Re-extract a larger patch pool."
             )
 
-        # Random pool index and random spatial crop
         idx = random.randrange(n)
         top = random.randint(0, ph - h)
         left = random.randint(0, pw - w)
-        noise = self._pool[idx, :, top : top + h, left : left + w]
+        patch = self._pool[idx, :, top : top + h, left : left + w]
 
-        # Match channel count (e.g. pool is 3-ch, clean could be 1-ch)
         if pc != c:
-            noise = noise[:c] if pc > c else noise.mean(0, keepdim=True).expand(c, -1, -1)
+            patch = patch[:c] if pc > c else patch.mean(0, keepdim=True).expand(c, -1, -1)
 
-        noise = noise.to(clean.device)
-        noisy = clean + noise
-        sigma_map = self._local_std(noise.unsqueeze(0)).squeeze(0)
+        patch = patch.to(clean.device)
+        noisy = _apply_blend(clean, patch, self._mode)
+        sigma_map = self._local_std((noisy - clean).unsqueeze(0)).squeeze(0)
         return noisy, clean, sigma_map
 
     def _local_std(self, x: Tensor) -> Tensor:
-        """Estimate local noise std via sliding-window variance (unfold trick)."""
         k = self._sigma_window
         pad = k // 2
         x_pad = F.pad(x, (pad, pad, pad, pad), mode="reflect")
-        patches = x_pad.unfold(2, k, 1).unfold(3, k, 1)  # (B, C, H, W, k, k)
+        patches = x_pad.unfold(2, k, 1).unfold(3, k, 1)
         var = patches.var(dim=(-2, -1), unbiased=False)
-        return var.sqrt().squeeze(0)  # (C, H, W)
+        return var.sqrt().squeeze(0)
 
 
 # ---------------------------------------------------------------------------
@@ -386,21 +539,31 @@ class MixedNoiseGenerator:
     @classmethod
     def default(
         cls,
-        patch_pool: Optional[str] = None,
+        patch_pools: Optional[list[tuple[str, str, float]]] = None,
         profile_json: Optional[str] = None,
     ) -> "MixedNoiseGenerator":
-        """Build the recommended four-way mixed generator.
+        """Build the recommended mixed generator.
 
-        RealNoiseInjection and RealRAW are included only when the
-        corresponding files are provided; their weight is redistributed to
-        the synthetic generators otherwise.
+        Wires together synthetic and real-noise generators with sensible default
+        weights.  Synthetic generators are always included; real-noise sources
+        are added only when supplied, with their weight drawn from the shared
+        budget (0.40) that would otherwise be split among synthetic generators.
+
+        Weight allocation:
+            Gaussian            0.30  (always)
+            Poisson-Gaussian    0.30  (always)
+            RealNoiseInjection  0.25  (when patch_pools provided)
+            RealRAWNoise        0.15  (when profile_json provided)
+            Remaining budget redistributed equally to Gaussian / Poisson-Gaussian.
 
         Args:
-            patch_pool: Path to .npz patch pool (noise_profiler.py output).
-            profile_json: Path to camera noise profile JSON.
-
-        Returns:
-            A MixedNoiseGenerator with appropriate generators and weights.
+            patch_pools: List of (npz_path, blend_mode, weight) triples passed
+                to RealNoiseInjectionGenerator.  blend_mode is one of
+                ``"add"``, ``"screen"``, ``"overlay"``, ``"soft_light"``.
+                The per-pool weight controls relative sampling frequency within
+                RealNoiseInjectionGenerator (independent of the 0.25 slot above).
+            profile_json: Path to a camera noise profile JSON produced by
+                noise_profiler.py Mode 1.
         """
         generators: list[NoiseGenerator] = [
             GaussianNoiseGenerator(0.0, 75.0 / 255.0),
@@ -409,8 +572,8 @@ class MixedNoiseGenerator:
         weights = [0.30, 0.30]
         remaining = 0.40
 
-        if patch_pool is not None:
-            generators.append(RealNoiseInjectionGenerator(patch_pool))
+        if patch_pools:
+            generators.append(RealNoiseInjectionGenerator(patch_pools))
             weights.append(0.25)
             remaining -= 0.25
 
@@ -419,11 +582,22 @@ class MixedNoiseGenerator:
             weights.append(0.15)
             remaining -= 0.15
 
-        # Redistribute any unclaimed weight to the first two generators
         weights[0] += remaining / 2
         weights[1] += remaining / 2
 
         return cls(generators=generators, weights=weights)
+
+    def for_clip(self) -> "NoiseGenerator":
+        """Return a clip-scoped noise applier with the generator locked for all frames.
+
+        Picks one generator (weighted random) and, if that generator supports
+        for_clip(), delegates to it so pool / ISO selection is also locked.
+        Use this in temporal datasets to ensure consistent noise across frames.
+        """
+        (gen,) = random.choices(self._generators, weights=self._weights, k=1)
+        if hasattr(gen, "for_clip"):
+            return gen.for_clip()
+        return gen
 
     def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Delegate to a randomly selected generator."""

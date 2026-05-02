@@ -1,31 +1,78 @@
-"""Camera noise profiling from dark-frame image sequences.
+"""Camera noise profiling and patch pool extraction from image sequences.
 
-This module extracts noise statistics from footage recorded with the lens cap
-on (or in a completely dark environment).  The results are used to calibrate
-the RealRAWNoiseGenerator and RealNoiseInjectionGenerator classes.
+This module serves two purposes:
 
-Two output modes:
+  Mode 1 — Parametric profile (for RealRAWNoiseGenerator)
+  --------------------------------------------------------
+  Fits scalar K (Poisson gain) and sigma_r (read noise std) to dark-frame and
+  flat-field sequences.  The result is a JSON file consumed by
+  RealRAWNoiseGenerator during training.
 
-  Mode 1 — Parametric profile (for RealRAWNoiseGenerator):
-      Fits scalar K (Poisson gain) and sigma_r (read noise) per ISO profile.
-      Requires dark frames; optionally flat-field frames for K estimation.
+  Capture requirements:
+    - Dark frames: expose with the lens cap on at the target ISO.
+      More frames → more accurate sigma_r estimate.  20–50 frames is typical.
+    - Flat frames (optional): expose a uniform grey card or diffuse white panel
+      at roughly 40–70 % of full scale, same ISO.  Required to estimate K
+      (Poisson gain); without them only sigma_r is fitted.
 
+  Example:
       uv run python noise_profiler.py \\
           --dark dark_sequence/*.png \\
           --flat flat_sequence/*.png \\
-          --iso iso_3200 \\
-          --output profiles/sony_a7iii_iso3200.json
+          --iso iso_3200 --camera "Sony A7 III" \\
+          --output profiles/sony_a7iii.json
 
-  Mode 2 — Patch pool (for RealNoiseInjectionGenerator):
-      Subtracts temporal mean from each dark frame, stores zero-mean residuals
-      as a compact .npz patch pool.
+  Run once per ISO level; subsequent runs merge into the same JSON so you can
+  accumulate multiple ISO profiles in one file.
 
-      uv run python noise_profiler.py \\
-          --dark dark_sequence/*.png \\
-          --save-patches pools/sony_a7iii_iso3200.npz \\
-          --patch-size 128
 
-Both modes can be run together in a single invocation.
+  Mode 2 — Patch pool (for RealNoiseInjectionGenerator)
+  ------------------------------------------------------
+  Chops source frames into non-overlapping (or strided) patches and saves them
+  as a compressed .npz file.  Only full patch_size × patch_size patches are
+  saved — partial patches at frame edges are always discarded.
+
+  Two capture styles are supported, selected by --no-mean-subtract:
+
+  a) Additive residuals (default — use for dark frames / sensor noise):
+       Subtracts the temporal mean across frames before tiling.  This removes
+       fixed-pattern noise (hot pixels, banding) and leaves zero-mean temporal
+       noise residuals.  Used with blend_mode="add" during training.
+
+       Capture: lens cap on, 20+ frames, any ISO.
+
+       uv run python noise_profiler.py \\
+           --dark dark_iso3200/*.png \\
+           --save-patches pools/dark_iso3200.npz \\
+           --patch-size 128
+
+  b) Overlay / grain plates (--no-mean-subtract — use for film grain, render
+       noise, or any source that is already a texture rather than a residual):
+       Saves raw normalised pixel values without mean subtraction.  These
+       patches are centred around 0.5 (neutral grey) and are designed for
+       blend_mode="overlay" or "screen" during training, where the blend
+       formula naturally handles the 0.5 neutral point.
+
+       Capture: static or slowly moving grain plate footage; render noise
+       sequences rendered with different random seeds; film scans of flat
+       leader frames.
+
+       uv run python noise_profiler.py \\
+           --dark grain_plate/*.png --no-mean-subtract \\
+           --save-patches pools/grain_35mm.npz \\
+           --patch-size 128
+
+  Both modes can be run in a single invocation by supplying both --output and
+  --save-patches.
+
+  Blend mode reference (noise_generators.py)
+  ------------------------------------------
+  Pool type          Recommended blend_mode   Training flag example
+  -----------------  -----------------------  ------------------------------------
+  Dark frame         add                      --patch-pool pools/dark.npz:add:3
+  Grain plate        overlay                  --patch-pool pools/grain.npz:overlay:1
+  Halation / glow    screen                   --patch-pool pools/glow.npz:screen:1
+  Subtle grain       soft_light               --patch-pool pools/subtle.npz:soft_light:1
 """
 
 import argparse
@@ -42,11 +89,117 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 
+def _read_frame(path: Path) -> np.ndarray:
+    """Load a single image file and return a float32 (H, W, C) array in [0, 1].
+
+    EXR files are read via cv2 (preferred — handles HDR float natively) with a
+    fallback to imageio.  All other formats use imageio directly.
+
+    EXR notes:
+      - Values are kept as-is (float32, linear).  HDR values above 1.0 are
+        valid for render noise residuals and are not clamped.
+      - Alpha channel is dropped if present (RGBA → RGB).
+      - cv2 returns BGR; this function converts to RGB.
+    """
+    if path.suffix.lower() == ".exr":
+        img = _read_exr(path)
+    else:
+        import imageio.v3 as iio
+        img = iio.imread(str(path)).astype(np.float32)
+        if img.ndim == 2:
+            img = img[:, :, np.newaxis]
+        img /= _dtype_max(img)
+
+    # Drop alpha channel
+    if img.ndim == 3 and img.shape[2] == 4:
+        img = img[:, :, :3]
+
+    return img
+
+
+def _read_exr(path: Path) -> np.ndarray:
+    """Read an EXR file and return a float32 (H, W, C) array.
+
+    Tries backends in order: cv2 → OpenEXR → imageio[opencv] → imageio[EXR-FI].
+    Raises RuntimeError with install instructions if all fail.
+    """
+    errors: list[str] = []
+
+    # 1. cv2 — most reliable, handles HDR float natively
+    try:
+        import cv2
+        img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+        if img is None:
+            raise RuntimeError("cv2 returned None")
+        img = img.astype(np.float32)
+        if img.ndim == 2:
+            img = img[:, :, np.newaxis]
+        elif img.shape[2] == 3:
+            img = img[:, :, ::-1].copy()  # BGR → RGB
+        elif img.shape[2] == 4:
+            img = img[:, :, [2, 1, 0, 3]]  # BGRA → RGBA, alpha dropped later
+        return img
+    except Exception as e:
+        errors.append(f"cv2: {e}")
+
+    # 2. OpenEXR Python package
+    try:
+        import OpenEXR
+        import Imath
+        exr = OpenEXR.InputFile(str(path))
+        header = exr.header()
+        dw = header["dataWindow"]
+        w = dw.max.x - dw.min.x + 1
+        h = dw.max.y - dw.min.y + 1
+        channels = sorted(header["channels"].keys())
+        rgb = [c for c in channels if c in ("R", "G", "B")]
+        if not rgb:
+            rgb = channels[:3]
+        pt = Imath.PixelType(Imath.PixelType.FLOAT)
+        data = [np.frombuffer(exr.channel(c, pt), dtype=np.float32).reshape(h, w) for c in rgb]
+        img = np.stack(data, axis=-1)  # (H, W, C)
+        return img
+    except Exception as e:
+        errors.append(f"OpenEXR: {e}")
+
+    # 3. imageio opencv plugin
+    try:
+        import imageio.v3 as iio
+        img = iio.imread(str(path), plugin="opencv").astype(np.float32)
+        if img.ndim == 2:
+            img = img[:, :, np.newaxis]
+        elif img.shape[2] == 3:
+            img = img[:, :, ::-1].copy()  # BGR → RGB
+        return img
+    except Exception as e:
+        errors.append(f"imageio[opencv]: {e}")
+
+    # 4. imageio EXR-FI plugin
+    try:
+        import imageio.v3 as iio
+        img = iio.imread(str(path), plugin="EXR-FI").astype(np.float32)
+        if img.ndim == 2:
+            img = img[:, :, np.newaxis]
+        return img
+    except Exception as e:
+        errors.append(f"imageio[EXR-FI]: {e}")
+
+    raise RuntimeError(
+        f"Cannot read EXR file {path.name} — no working backend found.\n"
+        "Install one of:\n"
+        "  uv add opencv-python          # cv2\n"
+        "  uv add OpenEXR                # OpenEXR Python bindings\n"
+        "  uv add imageio[opencv]        # imageio opencv plugin\n"
+        f"Attempted backends: {'; '.join(errors)}"
+    )
+
+
 def _load_frames(paths: list[Path]) -> np.ndarray:
     """Load a list of image files into a float32 array of shape (N, H, W, C).
 
-    Supports PNG, TIFF, EXR, and anything imageio can open.  All frames are
-    normalised to [0, 1].  Frames with differing shapes raise ValueError.
+    Supports PNG, TIFF, EXR (via cv2 or imageio), and anything else imageio
+    can open.  Integer formats are normalised to [0, 1]; float formats
+    (including EXR) are kept at their original scale.
 
     Args:
         paths: Sorted list of image file paths.
@@ -54,18 +207,10 @@ def _load_frames(paths: list[Path]) -> np.ndarray:
     Returns:
         Array of shape (N, H, W, C), dtype float32.
     """
-    import imageio.v3 as iio
-
     frames = []
     ref_shape: Optional[tuple] = None
     for path in paths:
-        img = iio.imread(str(path))
-        img = img.astype(np.float32)
-        if img.ndim == 2:
-            img = img[:, :, np.newaxis]
-        # Normalise to [0, 1] based on dtype range
-        max_val = _dtype_max(img)
-        img /= max_val
+        img = _read_frame(path)
         if ref_shape is None:
             ref_shape = img.shape
         elif img.shape != ref_shape:
@@ -79,9 +224,7 @@ def _load_frames(paths: list[Path]) -> np.ndarray:
 
 
 def _dtype_max(arr: np.ndarray) -> float:
-    """Return the normalisation maximum for an array, based on its dtype."""
-    if np.issubdtype(arr.dtype, np.floating):
-        return 1.0
+    """Return the normalisation divisor for an integer-typed array."""
     if arr.dtype == np.uint8:
         return 255.0
     if arr.dtype == np.uint16:
@@ -214,28 +357,38 @@ def build_patch_pool(
     dark_paths: list[Path],
     patch_size: int,
     stride: Optional[int] = None,
+    subtract_mean: bool = True,
 ) -> np.ndarray:
-    """Extract zero-mean noise residual patches from a dark-frame sequence.
+    """Extract noise patches from a sequence of frames.
 
-    Subtracts the temporal mean from each frame (removing fixed pattern noise),
-    then tiles the result into non-overlapping patches.
+    By default subtracts the temporal mean from each frame (removing fixed
+    pattern noise) to produce zero-mean residuals suitable for additive
+    injection.  Pass ``subtract_mean=False`` for overlay/screen grain plates
+    where the raw pixel values (centred around 0.5) are needed.
+
+    Only full patch_size × patch_size patches are extracted — partial patches
+    at frame edges are always skipped.
 
     Args:
-        dark_paths: Paths to dark frames.
+        dark_paths: Paths to source frames (dark frames or grain plate frames).
         patch_size: Spatial size of each square patch.
         stride: Extraction stride.  Defaults to *patch_size* (non-overlapping).
+        subtract_mean: If True (default), subtract the temporal mean before
+            tiling.  Set to False for overlay/screen grain plates.
 
     Returns:
         Array of shape (N_patches, C, patch_size, patch_size), dtype float32.
-        The ``residuals`` key in the saved .npz matches this layout.
     """
     if stride is None:
         stride = patch_size
 
-    print(f"Loading {len(dark_paths)} dark frames for patch pool…", file=sys.stderr)
-    frames = _load_frames(dark_paths)          # (N, H, W, C)
-    mean_dark = frames.mean(axis=0)            # (H, W, C) — fixed pattern noise
-    residuals = frames - mean_dark[np.newaxis]  # (N, H, W, C) — zero-mean noise
+    print(f"Loading {len(dark_paths)} frames for patch pool…", file=sys.stderr)
+    frames = _load_frames(dark_paths)  # (N, H, W, C)
+    if subtract_mean:
+        mean_dark = frames.mean(axis=0)
+        residuals = frames - mean_dark[np.newaxis]
+    else:
+        residuals = frames
 
     n_frames, h, w, c = residuals.shape
     patches = []
@@ -316,6 +469,14 @@ def main() -> None:
         "--patch-stride", type=int, default=None, metavar="N",
         help="Stride for patch extraction (default: patch_size, non-overlapping).",
     )
+    parser.add_argument(
+        "--no-mean-subtract", action="store_true",
+        help=(
+            "Skip temporal mean subtraction when building the patch pool. "
+            "Use this for overlay/screen grain plates where raw pixel values "
+            "(centred around 0.5) are needed instead of zero-mean residuals."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -358,6 +519,7 @@ def main() -> None:
             dark_paths=dark_paths,
             patch_size=args.patch_size,
             stride=args.patch_stride,
+            subtract_mean=not args.no_mean_subtract,
         )
         np.savez_compressed(pool_path, residuals=pool)
         print(f"Wrote patch pool ({len(pool)} patches) → {pool_path}")
