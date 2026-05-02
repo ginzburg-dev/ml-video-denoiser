@@ -105,10 +105,11 @@ def _read_frame(path: Path) -> np.ndarray:
         img = _read_exr(path)
     else:
         import imageio.v3 as iio
-        img = iio.imread(str(path)).astype(np.float32)
+        raw = iio.imread(str(path))
+        max_val = _dtype_max(raw)
+        img = raw.astype(np.float32) / max_val
         if img.ndim == 2:
             img = img[:, :, np.newaxis]
-        img /= _dtype_max(img)
 
     # Drop alpha channel
     if img.ndim == 3 and img.shape[2] == 4:
@@ -151,8 +152,9 @@ def _read_exr(path: Path) -> np.ndarray:
         dw = header["dataWindow"]
         w = dw.max.x - dw.min.x + 1
         h = dw.max.y - dw.min.y + 1
-        channels = sorted(header["channels"].keys())
-        rgb = [c for c in channels if c in ("R", "G", "B")]
+        channels = list(header["channels"].keys())
+        _rgb_order = {"R": 0, "G": 1, "B": 2}
+        rgb = sorted([c for c in channels if c in _rgb_order], key=lambda c: _rgb_order[c])
         if not rgb:
             rgb = channels[:3]
         pt = Imath.PixelType(Imath.PixelType.FLOAT)
@@ -224,7 +226,9 @@ def _load_frames(paths: list[Path]) -> np.ndarray:
 
 
 def _dtype_max(arr: np.ndarray) -> float:
-    """Return the normalisation divisor for an integer-typed array."""
+    """Return the normalisation divisor for the given array dtype."""
+    if np.issubdtype(arr.dtype, np.floating):
+        return 1.0
     if arr.dtype == np.uint8:
         return 255.0
     if arr.dtype == np.uint16:
