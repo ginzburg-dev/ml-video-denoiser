@@ -7,7 +7,30 @@ BlinkScript {
  name MCNoise1
  xpos 0
  ypos 0
- addUserKnob {20 training_tab l Training}
+ addUserKnob {20 MCNoise_tab l "MC Noise"}
+ addUserKnob {7 intensity l "Intensity" R 0 5}
+ intensity 1
+ addUserKnob {3 samples l "Samples"}
+ samples 16
+ addUserKnob {7 chromaSpread l "Chroma Spread" R 0 1}
+ chromaSpread 0.1
+ addUserKnob {7 noiseDarkFade l "Noise Dark Fade" R 0 1}
+ noiseDarkFade 0
+ addUserKnob {7 noiseFadeFalloff l "Noise Fade Falloff" R 0.1 5}
+ noiseFadeFalloff 1
+ addUserKnob {7 fireflyThresh l "Firefly Thresh" R 0 20}
+ fireflyThresh 6
+ addUserKnob {7 fireflyProb l "Firefly Prob" R 0 0.05}
+ fireflyProb 0.003
+ addUserKnob {7 fireflyChroma l "Firefly Chroma" R 0 1}
+ fireflyChroma 0.1
+ addUserKnob {7 fireflyDarkFade l "Firefly Dark Fade" R 0 1}
+ fireflyDarkFade 0
+ addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
+ fireflyFadeFalloff 1
+ addUserKnob {3 seed l "Seed"}
+ seed 42
+ addUserKnob {20 training_tab l "Training"}
  addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight during training. Higher = used more often."}
  mc_weight 1
 }

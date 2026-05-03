@@ -46,6 +46,15 @@ _KNOB_MAP = (
 )
 
 
+def _try_recompile(node):
+    """Force BlinkScript recompilation so parameter knobs are created."""
+    if node.Class() != "BlinkScript":
+        return
+    ks = node.knob("kernelSource")
+    if ks is not None:
+        ks.setValue(ks.value())
+
+
 def _read_knob(node, knob_name, json_key):
     knob = node.knob(knob_name)
     if knob is None:
@@ -69,6 +78,7 @@ def export_all(output_path):
         n.setSelected(False)
     for n in candidates:
         n.setSelected(True)
+        _try_recompile(n)
     export_selected(output_path)
     for n in nuke.allNodes():
         n.setSelected(False)
@@ -82,6 +92,9 @@ def export_selected(output_path):
     if not selected:
         nuke.message("No nodes selected.\nSelect one or more MCNoise nodes and try again.")
         return
+
+    for node in selected:
+        _try_recompile(node)
 
     presets = []
     skipped = []
