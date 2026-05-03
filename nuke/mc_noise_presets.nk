@@ -1,68 +1,27 @@
 # MCNoise Preset Bank — ml-video-denoiser training
 #
 # HOW TO USE:
-#   1. Tune parameters on each MCNoise node.
-#   2. Select nodes to export (or leave none selected to export all).
-#   3. Click "Export Presets" on the ExportPresets node.
-#   4. Train:  --noise mc --noise-mc-config /path/to/mc_noise_presets.json
+#   1. Set script_dir to the nuke/ folder in ml-video-denoiser repo.
+#   2. Click "Create Default Presets" to spawn light/medium/heavy MCNoise nodes.
+#   3. Tune parameters on each node, adjust Training Weight.
+#   4. Select nodes to export (or leave nothing selected to export all).
+#   5. Click "Export Presets" -> save JSON.
+#   6. Train:  --noise mc --noise-mc-config /path/to/mc_noise_presets.json
 
 Root {
  inputs 0
  name mc_noise_presets.nk
 }
 
-BlinkScript {
- kernelSource "kernel MCNoise : ImageComputationKernel<ePixelWise>\n{\n  Image<eRead, eAccessPoint, eEdgeClamped> src;\n  Image<eWrite> dst;\n\n  param:\n    int   samples;\n    float intensity;\n    float chromaSpread;\n    float noiseDarkFade;\n    float noiseFadeFalloff;\n    float fireflyThresh;\n    float fireflyProb;\n    float fireflyChroma;\n    float fireflyDarkFade;\n    float fireflyFadeFalloff;\n    int   seed;\n    float mc_weight;\n\n  void define() {\n    defineParam(samples,           \"Samples\",              16);\n    defineParam(intensity,         \"Intensity\",            1.0f);\n    defineParam(chromaSpread,      \"Chroma Spread\",        0.1f);\n    defineParam(noiseDarkFade,     \"Noise Dark Fade\",      0.0f);\n    defineParam(noiseFadeFalloff,  \"Noise Fade Falloff\",   1.0f);\n    defineParam(fireflyThresh,     \"Firefly Thresh\",       6.0f);\n    defineParam(fireflyProb,       \"Firefly Prob\",         0.003f);\n    defineParam(fireflyChroma,     \"Firefly Chroma\",       0.1f);\n    defineParam(fireflyDarkFade,   \"Firefly Dark Fade\",    0.0f);\n    defineParam(fireflyFadeFalloff,\"Firefly Fade Falloff\", 1.0f);\n    defineParam(seed,              \"Seed\",                 42);\n    defineParam(mc_weight,         \"Training Weight\",      1.0f);\n  }\n\n  float hash(int p) {\n    int h = (p << 13) ^ p;\n    h = h * (h * h * 15731 + 789221) + 1376312589;\n    return float(h & 0x7fffffff) * (1.0f / 2147483648.0f);\n  }\n\n  float gaussian(float u1, float u2) {\n    return sqrt(-2.0f * log(max(u1, 1e-7f))) * cos(6.28318530718f * u2);\n  }\n\n  float fadeMask(float lum, float falloff) {\n    return pow(min(max(lum, 0.0f), 1.0f), max(falloff, 0.001f));\n  }\n\n  void process(int2 pos) {\n    float4 px = src();\n\n    float sigma = intensity / sqrt(float(max(samples, 1)));\n    int   base  = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;\n\n    float lum       = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;\n    float noiseMask = 1.0f - noiseDarkFade * (1.0f - fadeMask(lum, noiseFadeFalloff));\n    float lumScale  = sqrt(max(lum, 0.0f)) + 0.05f * (1.0f - noiseDarkFade);\n    float noise     = sigma * lumScale * noiseMask;\n\n    float lumaG = gaussian(hash(base + 0), hash(base + 1));\n    float cr    = gaussian(hash(base + 2), hash(base + 3)) * chromaSpread;\n    float cg    = gaussian(hash(base + 4), hash(base + 5)) * chromaSpread;\n    float cb    = gaussian(hash(base + 6), hash(base + 7)) * chromaSpread;\n\n    float nr = px.x + (lumaG + cr) * noise;\n    float ng = px.y + (lumaG + cg) * noise;\n    float nb = px.z + (lumaG + cb) * noise;\n\n    float ffMask = 1.0f - fireflyDarkFade * (1.0f - fadeMask(lum, fireflyFadeFalloff));\n    if (hash(base + 99) < fireflyProb * ffMask) {\n      float spike = fireflyThresh + hash(base + 100) * fireflyThresh * 2.0f;\n      nr += spike * (1.0f + gaussian(hash(base + 101), hash(base + 102)) * fireflyChroma);\n      ng += spike * (1.0f + gaussian(hash(base + 103), hash(base + 104)) * fireflyChroma);\n      nb += spike * (1.0f + gaussian(hash(base + 105), hash(base + 106)) * fireflyChroma);\n    }\n\n    dst() = float4(nr, ng, nb, px.w);\n  }\n};\n"
- knobChanged "n = nuke.thisNode()\nif nuke.thisKnob().name() == 'xpos':\n    ks = n.knob('kernelSource')\n    if ks and ks.value():\n        ks.setValue(ks.value())"
- name MCNoise_light
- xpos -250
- ypos -100
- intensity 0.5
- samples 32
- chromaSpread 0.08
- fireflyThresh 6.0
- fireflyProb 0.001
- fireflyChroma 0.1
- mc_weight 1.0
-}
-BlinkScript {
- kernelSource "kernel MCNoise : ImageComputationKernel<ePixelWise>\n{\n  Image<eRead, eAccessPoint, eEdgeClamped> src;\n  Image<eWrite> dst;\n\n  param:\n    int   samples;\n    float intensity;\n    float chromaSpread;\n    float noiseDarkFade;\n    float noiseFadeFalloff;\n    float fireflyThresh;\n    float fireflyProb;\n    float fireflyChroma;\n    float fireflyDarkFade;\n    float fireflyFadeFalloff;\n    int   seed;\n    float mc_weight;\n\n  void define() {\n    defineParam(samples,           \"Samples\",              16);\n    defineParam(intensity,         \"Intensity\",            1.0f);\n    defineParam(chromaSpread,      \"Chroma Spread\",        0.1f);\n    defineParam(noiseDarkFade,     \"Noise Dark Fade\",      0.0f);\n    defineParam(noiseFadeFalloff,  \"Noise Fade Falloff\",   1.0f);\n    defineParam(fireflyThresh,     \"Firefly Thresh\",       6.0f);\n    defineParam(fireflyProb,       \"Firefly Prob\",         0.003f);\n    defineParam(fireflyChroma,     \"Firefly Chroma\",       0.1f);\n    defineParam(fireflyDarkFade,   \"Firefly Dark Fade\",    0.0f);\n    defineParam(fireflyFadeFalloff,\"Firefly Fade Falloff\", 1.0f);\n    defineParam(seed,              \"Seed\",                 42);\n    defineParam(mc_weight,         \"Training Weight\",      1.0f);\n  }\n\n  float hash(int p) {\n    int h = (p << 13) ^ p;\n    h = h * (h * h * 15731 + 789221) + 1376312589;\n    return float(h & 0x7fffffff) * (1.0f / 2147483648.0f);\n  }\n\n  float gaussian(float u1, float u2) {\n    return sqrt(-2.0f * log(max(u1, 1e-7f))) * cos(6.28318530718f * u2);\n  }\n\n  float fadeMask(float lum, float falloff) {\n    return pow(min(max(lum, 0.0f), 1.0f), max(falloff, 0.001f));\n  }\n\n  void process(int2 pos) {\n    float4 px = src();\n\n    float sigma = intensity / sqrt(float(max(samples, 1)));\n    int   base  = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;\n\n    float lum       = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;\n    float noiseMask = 1.0f - noiseDarkFade * (1.0f - fadeMask(lum, noiseFadeFalloff));\n    float lumScale  = sqrt(max(lum, 0.0f)) + 0.05f * (1.0f - noiseDarkFade);\n    float noise     = sigma * lumScale * noiseMask;\n\n    float lumaG = gaussian(hash(base + 0), hash(base + 1));\n    float cr    = gaussian(hash(base + 2), hash(base + 3)) * chromaSpread;\n    float cg    = gaussian(hash(base + 4), hash(base + 5)) * chromaSpread;\n    float cb    = gaussian(hash(base + 6), hash(base + 7)) * chromaSpread;\n\n    float nr = px.x + (lumaG + cr) * noise;\n    float ng = px.y + (lumaG + cg) * noise;\n    float nb = px.z + (lumaG + cb) * noise;\n\n    float ffMask = 1.0f - fireflyDarkFade * (1.0f - fadeMask(lum, fireflyFadeFalloff));\n    if (hash(base + 99) < fireflyProb * ffMask) {\n      float spike = fireflyThresh + hash(base + 100) * fireflyThresh * 2.0f;\n      nr += spike * (1.0f + gaussian(hash(base + 101), hash(base + 102)) * fireflyChroma);\n      ng += spike * (1.0f + gaussian(hash(base + 103), hash(base + 104)) * fireflyChroma);\n      nb += spike * (1.0f + gaussian(hash(base + 105), hash(base + 106)) * fireflyChroma);\n    }\n\n    dst() = float4(nr, ng, nb, px.w);\n  }\n};\n"
- knobChanged "n = nuke.thisNode()\nif nuke.thisKnob().name() == 'xpos':\n    ks = n.knob('kernelSource')\n    if ks and ks.value():\n        ks.setValue(ks.value())"
- name MCNoise_medium
- xpos 0
- ypos -100
- intensity 1.0
- samples 16
- chromaSpread 0.12
- fireflyThresh 6.0
- fireflyProb 0.003
- fireflyChroma 0.1
- mc_weight 3.0
-}
-BlinkScript {
- kernelSource "kernel MCNoise : ImageComputationKernel<ePixelWise>\n{\n  Image<eRead, eAccessPoint, eEdgeClamped> src;\n  Image<eWrite> dst;\n\n  param:\n    int   samples;\n    float intensity;\n    float chromaSpread;\n    float noiseDarkFade;\n    float noiseFadeFalloff;\n    float fireflyThresh;\n    float fireflyProb;\n    float fireflyChroma;\n    float fireflyDarkFade;\n    float fireflyFadeFalloff;\n    int   seed;\n    float mc_weight;\n\n  void define() {\n    defineParam(samples,           \"Samples\",              16);\n    defineParam(intensity,         \"Intensity\",            1.0f);\n    defineParam(chromaSpread,      \"Chroma Spread\",        0.1f);\n    defineParam(noiseDarkFade,     \"Noise Dark Fade\",      0.0f);\n    defineParam(noiseFadeFalloff,  \"Noise Fade Falloff\",   1.0f);\n    defineParam(fireflyThresh,     \"Firefly Thresh\",       6.0f);\n    defineParam(fireflyProb,       \"Firefly Prob\",         0.003f);\n    defineParam(fireflyChroma,     \"Firefly Chroma\",       0.1f);\n    defineParam(fireflyDarkFade,   \"Firefly Dark Fade\",    0.0f);\n    defineParam(fireflyFadeFalloff,\"Firefly Fade Falloff\", 1.0f);\n    defineParam(seed,              \"Seed\",                 42);\n    defineParam(mc_weight,         \"Training Weight\",      1.0f);\n  }\n\n  float hash(int p) {\n    int h = (p << 13) ^ p;\n    h = h * (h * h * 15731 + 789221) + 1376312589;\n    return float(h & 0x7fffffff) * (1.0f / 2147483648.0f);\n  }\n\n  float gaussian(float u1, float u2) {\n    return sqrt(-2.0f * log(max(u1, 1e-7f))) * cos(6.28318530718f * u2);\n  }\n\n  float fadeMask(float lum, float falloff) {\n    return pow(min(max(lum, 0.0f), 1.0f), max(falloff, 0.001f));\n  }\n\n  void process(int2 pos) {\n    float4 px = src();\n\n    float sigma = intensity / sqrt(float(max(samples, 1)));\n    int   base  = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;\n\n    float lum       = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;\n    float noiseMask = 1.0f - noiseDarkFade * (1.0f - fadeMask(lum, noiseFadeFalloff));\n    float lumScale  = sqrt(max(lum, 0.0f)) + 0.05f * (1.0f - noiseDarkFade);\n    float noise     = sigma * lumScale * noiseMask;\n\n    float lumaG = gaussian(hash(base + 0), hash(base + 1));\n    float cr    = gaussian(hash(base + 2), hash(base + 3)) * chromaSpread;\n    float cg    = gaussian(hash(base + 4), hash(base + 5)) * chromaSpread;\n    float cb    = gaussian(hash(base + 6), hash(base + 7)) * chromaSpread;\n\n    float nr = px.x + (lumaG + cr) * noise;\n    float ng = px.y + (lumaG + cg) * noise;\n    float nb = px.z + (lumaG + cb) * noise;\n\n    float ffMask = 1.0f - fireflyDarkFade * (1.0f - fadeMask(lum, fireflyFadeFalloff));\n    if (hash(base + 99) < fireflyProb * ffMask) {\n      float spike = fireflyThresh + hash(base + 100) * fireflyThresh * 2.0f;\n      nr += spike * (1.0f + gaussian(hash(base + 101), hash(base + 102)) * fireflyChroma);\n      ng += spike * (1.0f + gaussian(hash(base + 103), hash(base + 104)) * fireflyChroma);\n      nb += spike * (1.0f + gaussian(hash(base + 105), hash(base + 106)) * fireflyChroma);\n    }\n\n    dst() = float4(nr, ng, nb, px.w);\n  }\n};\n"
- knobChanged "n = nuke.thisNode()\nif nuke.thisKnob().name() == 'xpos':\n    ks = n.knob('kernelSource')\n    if ks and ks.value():\n        ks.setValue(ks.value())"
- name MCNoise_heavy
- xpos 250
- ypos -100
- intensity 2.0
- samples 8
- chromaSpread 0.18
- fireflyThresh 7.0
- fireflyProb 0.005
- fireflyChroma 0.15
- mc_weight 1.0
-}
-
 NoOp {
  inputs 0
  name ExportPresets
  xpos 0
- ypos 60
+ ypos 0
  addUserKnob {20 export_tab l "Export"}
- addUserKnob {26 info l "" +STARTLINE T "Select MCNoise nodes, then click Export.\nLeave nothing selected to export all."}
+ addUserKnob {26 info l "" +STARTLINE T "1. Click Create to make default MCNoise nodes.\n2. Tune params, then click Export Presets."}
  addUserKnob {22 create_btn l "Create Default Presets" T "import sys, nuke\nif 'export_mc_noise_presets' in sys.modules:\n    del sys.modules['export_mc_noise_presets']\nsys.path.insert(0, nuke.thisNode()['script_dir'].value())\nfrom export_mc_noise_presets import create_default_presets\ncreate_default_presets(nuke.thisNode()['script_dir'].value())" +STARTLINE}
- addUserKnob {22 export_btn l "Export Presets" T "import sys, nuke\nif 'export_mc_noise_presets' in sys.modules:\n    del sys.modules['export_mc_noise_presets']\nsys.path.insert(0, nuke.thisNode()['script_dir'].value())\nfrom export_mc_noise_presets import export_selected, export_all\npath = nuke.getFilename('Save MC Noise presets', '*.json')\nif path:\n    sel = nuke.selectedNodes()\n    if any(n for n in sel if n.name() != 'ExportPresets'):\n        export_selected(path)\n    else:\n        export_all(path)" +STARTLINE}
- addUserKnob {1 script_dir l "Nuke script dir" t "Absolute path to the nuke/ folder inside ml-video-denoiser repo."}
+ addUserKnob {22 export_btn l "Export Presets" T "import sys, nuke\nif 'export_mc_noise_presets' in sys.modules:\n    del sys.modules['export_mc_noise_presets']\nsys.path.insert(0, nuke.thisNode()['script_dir'].value())\nfrom export_mc_noise_presets import export_selected, export_all\npath = nuke.getFilename('Save MC Noise presets', '*.json')\nif path:\n    sel = [n for n in nuke.selectedNodes() if n.name() != 'ExportPresets']\n    if sel:\n        export_selected(path)\n    else:\n        export_all(path)" +STARTLINE}
+ addUserKnob {1 script_dir l "Script dir" t "Absolute path to the nuke/ folder inside ml-video-denoiser repo."}
  script_dir "/path/to/ml-video-denoiser/nuke"
 }

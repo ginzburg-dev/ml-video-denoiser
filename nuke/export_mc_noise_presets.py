@@ -94,25 +94,54 @@ def create_default_presets(blink_dir=None):
     with open(blink_path, "r") as f:
         kernel_source = f.read()
 
-    ref = nuke.thisNode() if nuke.thisNode() else None
-    ref_x = ref["xpos"].value() if ref else 0
-    ref_y = ref["ypos"].value() if ref else 0
+    try:
+        ref = nuke.thisNode()
+        ref_x = int(ref["xpos"].value())
+        ref_y = int(ref["ypos"].value())
+    except Exception:
+        ref_x, ref_y = 0, 0
+
+    # Deselect all so new nodes don't auto-connect
+    for existing in nuke.allNodes():
+        existing.setSelected(False)
 
     _SKIP = ("name", "xpos", "ypos")
     created = []
     for p in _DEFAULT_PRESETS:
-        n = nuke.nodes.BlinkScript()
+        # nuke.nodes.BlinkScript() creates without auto-connecting
+        n = nuke.nodes.BlinkScript(inputs=0)
         n["kernelSource"].setValue(kernel_source)
-        n["kernelSource"].setValue(kernel_source)  # double-set triggers compile
+        n["xpos"].setValue(ref_x + p["xpos"])
+        n["ypos"].setValue(ref_y - 160)
         n["name"].setValue(p["name"])
-        n["xpos"].setValue(int(ref_x + p["xpos"]))
-        n["ypos"].setValue(int(ref_y - 160))
+
+        # Build param assignments to apply after compile
+        assignments = {}
         for key, val in p.items():
             if key in _SKIP:
                 continue
+            assignments[key] = val
+
+        # Try setting immediately (works if kernelSource setValue triggered compile)
+        remaining = {}
+        for key, val in assignments.items():
             k = n.knob(key)
-            if k:
+            if k is not None:
                 k.setValue(val)
+            else:
+                remaining[key] = val
+
+        # For any params not yet available, install a one-shot knobChanged
+        # that applies them on first compile (xpos fires on placement)
+        if remaining:
+            lines = ["n = nuke.thisNode()"]
+            lines.append("if nuke.thisKnob().name() == 'xpos':")
+            for key, val in remaining.items():
+                lines.append("    k = n.knob('%s')" % key)
+                lines.append("    if k: k.setValue(%r)" % val)
+            lines.append("    n['knobChanged'].setValue('')")  # remove self after first run
+            n["knobChanged"].setValue("\\n".join(lines))
+
         created.append(p["name"])
 
     nuke.message("Created %d MCNoise nodes:\n%s" % (len(created), "\n".join(created)))
