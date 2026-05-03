@@ -1,12 +1,11 @@
-# MCNoise Preset Bank — ml-video-denoiser training
+# MCNoise Preset Bank -- ml-video-denoiser training
 #
 # HOW TO USE:
 #   1. Set script_dir to the nuke/ folder in ml-video-denoiser repo.
-#   2. Click "Create Default Presets" to spawn light/medium/heavy MCNoise nodes.
-#   3. Tune parameters on each node, adjust Training Weight.
-#   4. Select nodes to export (or leave nothing selected to export all).
-#   5. Click "Export Presets" -> save JSON.
-#   6. Train:  --noise mc --noise-mc-config /path/to/mc_noise_presets.json
+#   2. Insert MCNoise.nk nodes, connect to image, compile, set params.
+#   3. Select nodes to export (or leave nothing selected to export all).
+#   4. Click "Export Presets" -> save JSON.
+#   5. Train:  --noise mc --noise-mc-config /path/to/mc_noise_presets.json
 
 Root {
  inputs 0
@@ -19,8 +18,6 @@ NoOp {
  xpos 0
  ypos 0
  addUserKnob {20 export_tab l "Export"}
- addUserKnob {26 info l "" +STARTLINE T "1. Click Create to make default MCNoise nodes.\n2. Tune params, then click Export Presets."}
- addUserKnob {22 create_btn l "Create Default Presets" T "import sys, nuke\nif 'export_mc_noise_presets' in sys.modules:\n    del sys.modules['export_mc_noise_presets']\nsys.path.insert(0, nuke.thisNode()['script_dir'].value())\nfrom export_mc_noise_presets import create_default_presets\ncreate_default_presets(nuke.thisNode()['script_dir'].value())" +STARTLINE}
  addUserKnob {22 export_btn l "Export Presets" T "import sys, nuke\nif 'export_mc_noise_presets' in sys.modules:\n    del sys.modules['export_mc_noise_presets']\nsys.path.insert(0, nuke.thisNode()['script_dir'].value())\nfrom export_mc_noise_presets import export_selected, export_all\npath = nuke.getFilename('Save MC Noise presets', '*.json')\nif path:\n    sel = [n for n in nuke.selectedNodes() if n.name() != 'ExportPresets']\n    if sel:\n        export_selected(path)\n    else:\n        export_all(path)" +STARTLINE}
  addUserKnob {1 script_dir l "Script dir" t "Absolute path to the nuke/ folder inside ml-video-denoiser repo."}
  script_dir "/path/to/ml-video-denoiser/nuke"
