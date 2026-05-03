@@ -1,0 +1,98 @@
+kernel MCNoise : ImageComputationKernel<ePixelWise>
+{
+  Image<eRead, eAccessPoint, eEdgeClamped> src;
+  Image<eWrite> dst;
+
+  param:
+    int   samples;
+    float intensity;
+    float chromaSpread;
+    float noiseDarkFade;      // 0 = noise in shadows, 1 = fades to zero in black
+    float noiseFadeFalloff;   // 1 = linear, <1 = gentle, >1 = sharp
+    float fireflyThresh;
+    float fireflyProb;
+    float fireflyChroma;
+    float fireflyDarkFade;    // 0 = fireflies everywhere, 1 = none in black
+    float fireflyFadeFalloff; // 1 = linear, <1 = gentle, >1 = sharp
+    int   seed;
+
+  local:
+    float _sigma;
+    float _twoPi;
+
+  void define() {
+    defineParam(samples,           "Samples",              16);
+    defineParam(intensity,         "Intensity",            1.0f);
+    defineParam(chromaSpread,      "Chroma Spread",        0.1f);
+    defineParam(noiseDarkFade,     "Noise Dark Fade",      0.0f);
+    defineParam(noiseFadeFalloff,  "Noise Fade Falloff",   1.0f);
+    defineParam(fireflyThresh,     "Firefly Thresh",       6.0f);
+    defineParam(fireflyProb,       "Firefly Prob",         0.003f);
+    defineParam(fireflyChroma,     "Firefly Chroma",       0.1f);
+    defineParam(fireflyDarkFade,   "Firefly Dark Fade",    0.0f);
+    defineParam(fireflyFadeFalloff,"Firefly Fade Falloff", 1.0f);
+    defineParam(seed,              "Seed",                 42);
+  }
+
+  void init() {
+    _sigma = intensity / sqrt(float(max(samples, 1)));
+    _twoPi = 6.28318530718f;
+  }
+
+  float hash(int n) {
+    n = (n << 13) ^ n;
+    n = n * (n * n * 15731 + 789221) + 1376312589;
+    return (float)(n & 0x7fffffff) * (1.0f / 2147483648.0f);
+  }
+
+  float gaussian(float u1, float u2) {
+    return sqrt(-2.0f * log(max(u1, 1e-7f))) * cos(_twoPi * u2);
+  }
+
+  // Luminance shaped by a power curve for fade falloff control.
+  // falloff=1 → linear. falloff>1 → cuts fast in darks. falloff<1 → stays loud longer.
+  float fadeMask(float lum, float falloff) {
+    return pow(min(max(lum, 0.0f), 1.0f), max(falloff, 0.001f));
+  }
+
+  void process(int2 pos) {
+    float4 px = src();
+
+    int base = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;
+
+    float lum = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;
+
+    // Noise fade mask — mix between full (1.0) and shaped lum curve
+    float noiseMask = 1.0f - noiseDarkFade * (1.0f - fadeMask(lum, noiseFadeFalloff));
+    float darkFloor = 0.05f * (1.0f - noiseDarkFade);
+    float lumScale  = sqrt(max(lum, 0.0f)) + darkFloor;
+    float noise     = _sigma * lumScale * noiseMask;
+
+    // Grain — shared luma + independent chroma deltas
+    float lumaG = gaussian(hash(base + 0), hash(base + 1));
+    float cr    = gaussian(hash(base + 2), hash(base + 3)) * chromaSpread;
+    float cg    = gaussian(hash(base + 4), hash(base + 5)) * chromaSpread;
+    float cb    = gaussian(hash(base + 6), hash(base + 7)) * chromaSpread;
+
+    float nr = px.x + (lumaG + cr) * noise;
+    float ng = px.y + (lumaG + cg) * noise;
+    float nb = px.z + (lumaG + cb) * noise;
+
+    // Firefly fade mask — same pattern, independent falloff
+    float ffMask = 1.0f - fireflyDarkFade * (1.0f - fadeMask(lum, fireflyFadeFalloff));
+    float ffProb = fireflyProb * ffMask;
+
+    float ff = hash(base + 99);
+    if (ff < ffProb) {
+      float spike = fireflyThresh + hash(base + 100) * fireflyThresh * 2.0f;
+      float fcr   = gaussian(hash(base + 101), hash(base + 102)) * fireflyChroma;
+      float fcg   = gaussian(hash(base + 103), hash(base + 104)) * fireflyChroma;
+      float fcb   = gaussian(hash(base + 105), hash(base + 106)) * fireflyChroma;
+      nr += spike * (1.0f + fcr);
+      ng += spike * (1.0f + fcg);
+      nb += spike * (1.0f + fcb);
+    }
+
+    dst() = float4(nr, ng, nb, px.w);
+  }
+};

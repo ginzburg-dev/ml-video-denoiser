@@ -1,0 +1,121 @@
+# MCNoise Preset Bank — blank template for ml-video-denoiser training
+#
+# HOW TO USE:
+#   1. Open this script in Nuke.
+#   2. Each NoOp node mirrors the MCNoise BlinkScript knob layout.
+#      Tune parameters, or load MCNoise.blink into a BlinkScript node and
+#      copy your values here (knob names are identical to the Blink params).
+#   3. Set mc_weight on each node — controls sampling frequency during training.
+#   4. Select all preset nodes (or leave none selected to export all).
+#   5. Click "Export Presets" on the ExportPresets node.
+#   6. Train:  --noise mc --noise-mc-config /path/to/mc_noise_presets.json
+
+Root {
+ inputs 0
+ name mc_noise_presets.nk
+}
+
+NoOp {
+ inputs 0
+ name MCNoise_light
+ xpos -220
+ ypos -100
+ addUserKnob {20 MCNoise_tab l "MC Noise"}
+ addUserKnob {7 intensity l "Intensity" R 0 5}
+ intensity 0.5
+ addUserKnob {3 samples l "Samples"}
+ samples 32
+ addUserKnob {7 chromaSpread l "Chroma Spread"}
+ chromaSpread 0.08
+ addUserKnob {7 noiseDarkFade l "Noise Dark Fade"}
+ noiseDarkFade 0
+ addUserKnob {7 noiseFadeFalloff l "Noise Fade Falloff" R 0.1 5}
+ noiseFadeFalloff 1
+ addUserKnob {7 fireflyThresh l "Firefly Thresh" R 0 20}
+ fireflyThresh 6
+ addUserKnob {7 fireflyProb l "Firefly Prob" R 0 0.05}
+ fireflyProb 0.001
+ addUserKnob {7 fireflyChroma l "Firefly Chroma"}
+ fireflyChroma 0.1
+ addUserKnob {7 fireflyDarkFade l "Firefly Dark Fade"}
+ fireflyDarkFade 0
+ addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
+ fireflyFadeFalloff 1
+ addUserKnob {20 training_tab l "Training"}
+ addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight. Higher = used more often during training."}
+ mc_weight 1
+}
+
+NoOp {
+ inputs 0
+ name MCNoise_medium
+ xpos 0
+ ypos -100
+ addUserKnob {20 MCNoise_tab l "MC Noise"}
+ addUserKnob {7 intensity l "Intensity" R 0 5}
+ intensity 1
+ addUserKnob {3 samples l "Samples"}
+ samples 16
+ addUserKnob {7 chromaSpread l "Chroma Spread"}
+ chromaSpread 0.12
+ addUserKnob {7 noiseDarkFade l "Noise Dark Fade"}
+ noiseDarkFade 0
+ addUserKnob {7 noiseFadeFalloff l "Noise Fade Falloff" R 0.1 5}
+ noiseFadeFalloff 1
+ addUserKnob {7 fireflyThresh l "Firefly Thresh" R 0 20}
+ fireflyThresh 6
+ addUserKnob {7 fireflyProb l "Firefly Prob" R 0 0.05}
+ fireflyProb 0.003
+ addUserKnob {7 fireflyChroma l "Firefly Chroma"}
+ fireflyChroma 0.1
+ addUserKnob {7 fireflyDarkFade l "Firefly Dark Fade"}
+ fireflyDarkFade 0
+ addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
+ fireflyFadeFalloff 1
+ addUserKnob {20 training_tab l "Training"}
+ addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight. Higher = used more often during training."}
+ mc_weight 3
+}
+
+NoOp {
+ inputs 0
+ name MCNoise_heavy
+ xpos 220
+ ypos -100
+ addUserKnob {20 MCNoise_tab l "MC Noise"}
+ addUserKnob {7 intensity l "Intensity" R 0 5}
+ intensity 2
+ addUserKnob {3 samples l "Samples"}
+ samples 8
+ addUserKnob {7 chromaSpread l "Chroma Spread"}
+ chromaSpread 0.18
+ addUserKnob {7 noiseDarkFade l "Noise Dark Fade"}
+ noiseDarkFade 0
+ addUserKnob {7 noiseFadeFalloff l "Noise Fade Falloff" R 0.1 5}
+ noiseFadeFalloff 1
+ addUserKnob {7 fireflyThresh l "Firefly Thresh" R 0 20}
+ fireflyThresh 7
+ addUserKnob {7 fireflyProb l "Firefly Prob" R 0 0.05}
+ fireflyProb 0.005
+ addUserKnob {7 fireflyChroma l "Firefly Chroma"}
+ fireflyChroma 0.15
+ addUserKnob {7 fireflyDarkFade l "Firefly Dark Fade"}
+ fireflyDarkFade 0
+ addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
+ fireflyFadeFalloff 1
+ addUserKnob {20 training_tab l "Training"}
+ addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight. Higher = used more often during training."}
+ mc_weight 1
+}
+
+NoOp {
+ inputs 0
+ name ExportPresets
+ xpos 0
+ ypos 60
+ addUserKnob {20 export_tab l "Export"}
+ addUserKnob {26 info l "" +STARTLINE T "Select MCNoise nodes above, then click Export.\nLeave nothing selected to export all MCNoise nodes in the script."}
+ addUserKnob {22 export_btn l "Export Presets" T "import sys, nuke\nsys.path.insert(0, nuke.thisNode()['script_dir'].value())\nfrom export_mc_noise_presets import export_selected, export_all\npath = nuke.getFilename('Save MC Noise presets', '*.json')\nif path:\n    sel = nuke.selectedNodes()\n    if any(n for n in sel if n.name() != 'ExportPresets'):\n        export_selected(path)\n    else:\n        export_all(path)" +STARTLINE}
+ addUserKnob {1 script_dir l "Nuke script dir" t "Absolute path to the nuke/ folder inside ml-video-denoiser repo."}
+ script_dir "/path/to/ml-video-denoiser/nuke"
+}

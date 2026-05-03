@@ -1,0 +1,44 @@
+[
+  {
+    "name": "MCNoise_light",
+    "weight": 1.0,
+    "intensity": 0.5,
+    "samples": 32,
+    "chroma_spread": 0.08,
+    "noise_dark_fade": 0.0,
+    "noise_fade_falloff": 1.0,
+    "firefly_thresh": 6.0,
+    "firefly_prob": 0.001,
+    "firefly_chroma": 0.1,
+    "firefly_dark_fade": 0.0,
+    "firefly_fade_falloff": 1.0
+  },
+  {
+    "name": "MCNoise_medium",
+    "weight": 3.0,
+    "intensity": 1.0,
+    "samples": 16,
+    "chroma_spread": 0.12,
+    "noise_dark_fade": 0.0,
+    "noise_fade_falloff": 1.0,
+    "firefly_thresh": 6.0,
+    "firefly_prob": 0.003,
+    "firefly_chroma": 0.1,
+    "firefly_dark_fade": 0.0,
+    "firefly_fade_falloff": 1.0
+  },
+  {
+    "name": "MCNoise_heavy",
+    "weight": 1.0,
+    "intensity": 2.0,
+    "samples": 8,
+    "chroma_spread": 0.18,
+    "noise_dark_fade": 0.0,
+    "noise_fade_falloff": 1.0,
+    "firefly_thresh": 7.0,
+    "firefly_prob": 0.005,
+    "firefly_chroma": 0.15,
+    "firefly_dark_fade": 0.0,
+    "firefly_fade_falloff": 1.0
+  }
+]
