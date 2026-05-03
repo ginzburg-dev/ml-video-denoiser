@@ -3,7 +3,6 @@ BlinkScript {
  name MCNoise1
  xpos 0
  ypos 0
- addUserKnob {20 training_tab l "Training"}
  addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight during training. Higher = used more often."}
  mc_weight 1
 }

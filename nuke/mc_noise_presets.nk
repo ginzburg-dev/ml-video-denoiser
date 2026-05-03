@@ -41,7 +41,6 @@ NoOp {
  fireflyDarkFade 0
  addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
  fireflyFadeFalloff 1
- addUserKnob {20 training_tab l "Training"}
  addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight. Higher = used more often during training."}
  mc_weight 1
 }
@@ -72,7 +71,6 @@ NoOp {
  fireflyDarkFade 0
  addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
  fireflyFadeFalloff 1
- addUserKnob {20 training_tab l "Training"}
  addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight. Higher = used more often during training."}
  mc_weight 3
 }
@@ -103,7 +101,6 @@ NoOp {
  fireflyDarkFade 0
  addUserKnob {7 fireflyFadeFalloff l "Firefly Fade Falloff" R 0.1 5}
  fireflyFadeFalloff 1
- addUserKnob {20 training_tab l "Training"}
  addUserKnob {7 mc_weight l "Training Weight" R 0 10 t "Relative sampling weight. Higher = used more often during training."}
  mc_weight 1
 }
