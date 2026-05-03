@@ -20,5 +20,5 @@ NoOp {
  addUserKnob {20 export_tab l "Export"}
  addUserKnob {22 export_btn l "Export Presets" T "import sys, nuke\nif 'export_mc_noise_presets' in sys.modules:\n    del sys.modules['export_mc_noise_presets']\nscript_dir = nuke.thisNode()['script_dir'].value().replace(chr(92), '/')\nif script_dir not in sys.path:\n    sys.path.insert(0, script_dir)\nfrom export_mc_noise_presets import export_selected, export_all\npath = nuke.getFilename('Save MC Noise presets', '*.json')\nif path:\n    sel = [n for n in nuke.selectedNodes() if n.name() != 'ExportPresets']\n    if sel:\n        export_selected(path)\n    else:\n        export_all(path)" +STARTLINE}
  addUserKnob {1 script_dir l "Script dir" t "Absolute path to the nuke/ folder inside ml-video-denoiser repo."}
- script_dir "c:/Ginzburg/Production/Development/ml-video-denoiser/nuke"
+ script_dir "/path/to/ml-video-denoiser/nuke"
 }
