@@ -109,8 +109,7 @@ def create_default_presets(blink_dir=None):
     created = []
     for p in _DEFAULT_PRESETS:
         # nuke.nodes.BlinkScript() creates without auto-connecting
-        n = nuke.nodes.BlinkScript()
-        n["kernelSource"].setValue(kernel_source)
+        n = nuke.nodes.BlinkScript(kernelSource=kernel_source)
         n["xpos"].setValue(ref_x + p["xpos"])
         n["ypos"].setValue(ref_y - 160)
         n["name"].setValue(p["name"])
