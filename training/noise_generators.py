@@ -188,6 +188,141 @@ class PoissonGaussianNoiseGenerator:
 
 
 # ---------------------------------------------------------------------------
+# MCNoise — Nuke Blink-compatible luminance-dependent grain + fireflies
+# ---------------------------------------------------------------------------
+
+
+class MCNoiseGenerator:
+    """Luminance-dependent grain with chroma spread and firefly spikes.
+
+    Matches the MCNoise Blink kernel exactly:
+      - Per-pixel sigma scales with sqrt(lum) — shot-noise characteristic
+      - Independent chroma perturbation on top of shared luma grain
+      - Optional dark fade: noise amplitude can taper toward zero in blacks
+      - Optional firefly spikes: rare bright outliers with their own dark fade
+
+    Args:
+        intensity:            Base noise intensity (default 1.0).
+        samples:              Virtual sample count; sigma = intensity / sqrt(samples).
+        chroma_spread:        Independent per-channel chroma noise scale (default 0.1).
+        noise_dark_fade:      0 = full noise in shadows, 1 = zero noise in blacks.
+        noise_fade_falloff:   Power curve for noise dark fade (1 = linear).
+        firefly_thresh:       Firefly spike floor magnitude (default 6.0).
+        firefly_prob:         Per-pixel probability of a firefly (default 0.003).
+        firefly_chroma:       Chroma spread of firefly spikes (default 0.1).
+        firefly_dark_fade:    0 = fireflies everywhere, 1 = none in blacks.
+        firefly_fade_falloff: Power curve for firefly dark fade (1 = linear).
+    """
+
+    def __init__(
+        self,
+        intensity: float = 1.0,
+        samples: int = 16,
+        chroma_spread: float = 0.1,
+        noise_dark_fade: float = 0.0,
+        noise_fade_falloff: float = 1.0,
+        firefly_thresh: float = 6.0,
+        firefly_prob: float = 0.003,
+        firefly_chroma: float = 0.1,
+        firefly_dark_fade: float = 0.0,
+        firefly_fade_falloff: float = 1.0,
+    ) -> None:
+        self._sigma = intensity / max(samples, 1) ** 0.5
+        self._chroma_spread = chroma_spread
+        self._noise_dark_fade = noise_dark_fade
+        self._noise_fade_falloff = max(noise_fade_falloff, 0.001)
+        self._firefly_thresh = firefly_thresh
+        self._firefly_prob = firefly_prob
+        self._firefly_chroma = firefly_chroma
+        self._firefly_dark_fade = firefly_dark_fade
+        self._firefly_fade_falloff = max(firefly_fade_falloff, 0.001)
+
+    def _fade_mask(self, lum: Tensor, falloff: float) -> Tensor:
+        return lum.clamp(0.0, 1.0).pow(falloff)
+
+    def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        _, h, w = clean.shape
+        dev, dtype = clean.device, clean.dtype
+
+        lum = (0.2126 * clean[0] + 0.7152 * clean[1] + 0.0722 * clean[2]).unsqueeze(0)
+
+        noise_mask = 1.0 - self._noise_dark_fade * (1.0 - self._fade_mask(lum, self._noise_fade_falloff))
+        dark_floor = 0.05 * (1.0 - self._noise_dark_fade)
+        lum_scale = lum.clamp_min(0.0).sqrt() + dark_floor
+        noise = self._sigma * lum_scale * noise_mask  # (1, H, W)
+
+        luma_g = torch.randn(1, h, w, device=dev, dtype=dtype)
+        chroma = torch.randn(3, h, w, device=dev, dtype=dtype) * self._chroma_spread
+        noisy = clean + (luma_g + chroma) * noise
+
+        if self._firefly_prob > 0.0:
+            ff_mask = 1.0 - self._firefly_dark_fade * (1.0 - self._fade_mask(lum, self._firefly_fade_falloff))
+            fire = torch.rand(1, h, w, device=dev, dtype=dtype) < (self._firefly_prob * ff_mask)
+            spike = self._firefly_thresh + torch.rand(1, h, w, device=dev, dtype=dtype) * self._firefly_thresh * 2.0
+            ff_chroma = torch.randn(3, h, w, device=dev, dtype=dtype) * self._firefly_chroma
+            noisy = noisy + fire * spike * (1.0 + ff_chroma)
+
+        sigma_map = (noise * (1.0 + self._chroma_spread)).expand_as(clean)
+        return noisy, clean, sigma_map
+
+
+# ---------------------------------------------------------------------------
+# MCNoise preset bank — weighted pool of MCNoiseGenerator configs
+# ---------------------------------------------------------------------------
+
+_MC_KNOB_KEYS: tuple[str, ...] = (
+    "intensity", "samples", "chroma_spread",
+    "noise_dark_fade", "noise_fade_falloff",
+    "firefly_thresh", "firefly_prob", "firefly_chroma",
+    "firefly_dark_fade", "firefly_fade_falloff",
+)
+
+
+class MCNoisePresetBank:
+    """Weighted pool of MCNoiseGenerator presets loaded from JSON.
+
+    JSON format (array of preset objects):
+        [
+          {"name": "light",  "intensity": 0.5, "samples": 32, "weight": 1},
+          {"name": "medium", "intensity": 1.0, "samples": 16, "weight": 3},
+          {"name": "heavy",  "intensity": 2.0, "samples": 8,  "weight": 1,
+           "firefly_prob": 0.005}
+        ]
+
+    All MCNoiseGenerator constructor keys are valid.  ``name`` and ``weight``
+    are metadata — ``name`` is informational, ``weight`` controls sampling
+    frequency (default 1.0).  Weights do not need to sum to any value.
+
+    Export from Nuke using nuke/export_mc_noise_presets.py.
+    """
+
+    def __init__(self, entries: list[tuple["MCNoiseGenerator", float, str]]) -> None:
+        self._generators = [(g, name) for g, _, name in entries]
+        weights = [w for _, w, _ in entries]
+        total = sum(weights)
+        self._probs = [w / total for w in weights]
+
+    @classmethod
+    def from_json(cls, path: str) -> "MCNoisePresetBank":
+        with open(path) as f:
+            data = json.load(f)
+        entries: list[tuple[MCNoiseGenerator, float, str]] = []
+        for item in data:
+            name = item.get("name", "preset")
+            weight = float(item.get("weight", 1.0))
+            kwargs = {}
+            for k in _MC_KNOB_KEYS:
+                if k in item:
+                    kwargs[k] = int(item[k]) if k == "samples" else float(item[k])
+            entries.append((MCNoiseGenerator(**kwargs), weight, name))
+        return cls(entries)
+
+    def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        (gen, _), = random.choices(self._generators, weights=self._probs, k=1)
+        return gen(clean)
+
+
+# ---------------------------------------------------------------------------
 # Blend modes
 # ---------------------------------------------------------------------------
 

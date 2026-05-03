@@ -104,6 +104,8 @@ from models import (
 TEMPORAL_MODEL_TYPES: frozenset[str] = frozenset({"temporal", "refined_temporal", "cascade"})
 from noise_generators import (
     GaussianNoiseGenerator,
+    MCNoiseGenerator,
+    MCNoisePresetBank,
     MixedNoiseGenerator,
     PoissonGaussianNoiseGenerator,
     RealNoiseInjectionGenerator,
@@ -872,10 +874,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Synthetic noise options
     parser.add_argument(
         "--noise",
-        choices=["gaussian", "poisson-gaussian", "real", "mixed"],
+        choices=["gaussian", "poisson-gaussian", "real", "mc", "mixed"],
         default="mixed",
         help="Noise model for clean-only training data. "
              "'real' uses patch pools only (requires --patch-pool). "
+             "'mc' uses MCNoise luminance-dependent grain. "
              "'mixed' combines synthetic and real sources.",
     )
     parser.add_argument("--patch-pool", nargs="+", default=None, metavar="PATH[:MODE[:WEIGHT]]",
@@ -887,6 +890,9 @@ def build_parser() -> argparse.ArgumentParser:
                         ))
     parser.add_argument("--noise-profile", default=None, metavar="PATH",
                         help="Path to calibrated noise profile (.json).")
+    parser.add_argument("--noise-mc-config", default=None, metavar="PATH",
+                        help="JSON preset bank for --noise mc.  "
+                             "Export from Nuke using nuke/export_mc_noise_presets.py.")
     return parser
 
 
@@ -926,6 +932,13 @@ def _make_noise_generator(
         if not args.patch_pool:
             parser.error("--noise real requires --patch-pool.")
         return RealNoiseInjectionGenerator(_parse_pool_specs(args.patch_pool))
+
+    if args.noise == "mc":
+        if args.patch_pool or args.noise_profile:
+            parser.error("--patch-pool and --noise-profile are not used with --noise mc.")
+        if args.noise_mc_config:
+            return MCNoisePresetBank.from_json(args.noise_mc_config)
+        return MCNoiseGenerator()
 
     patch_pools = _parse_pool_specs(args.patch_pool) if args.patch_pool else None
     return MixedNoiseGenerator.default(
