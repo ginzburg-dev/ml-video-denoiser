@@ -50,7 +50,6 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     float4 px = src();
 
     float sigma = intensity / sqrt(float(max(samples, 1)));
-    int   base  = pos.x * 73856093 ^ pos.y * 19349663 ^ seed ^ int(mc_weight * 0.0f);
     int   base  = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;
 
     float lum       = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;

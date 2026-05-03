@@ -79,20 +79,6 @@ def _is_mcnoise_node(node):
     return all(_find_knob(node, "", label) is not None for label in required)
 
 
-def _compile(node):
-    recompile = node.knob("recompile")
-    if recompile is not None:
-        try:
-            recompile.execute()
-            return
-        except Exception:
-            pass
-
-    ks = node.knob("kernelSource")
-    if ks is not None:
-        ks.setValue(ks.value())
-
-
 def _read_knob(node, knob_name, json_key, display_label):
     knob = _find_knob(node, knob_name, display_label)
     if knob is None:
@@ -125,9 +111,6 @@ def export_selected(output_path):
     if not selected:
         nuke.message("No nodes selected.\nSelect one or more MCNoise nodes and try again.")
         return
-
-    for node in selected:
-        _compile(node)
 
     presets = []
     skipped = []
