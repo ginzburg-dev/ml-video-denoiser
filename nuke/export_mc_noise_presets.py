@@ -94,6 +94,10 @@ def create_default_presets(blink_dir=None):
     with open(blink_path, "r") as f:
         kernel_source = f.read()
 
+    ref = nuke.thisNode() if nuke.thisNode() else None
+    ref_x = ref["xpos"].value() if ref else 0
+    ref_y = ref["ypos"].value() if ref else 0
+
     _SKIP = ("name", "xpos", "ypos")
     created = []
     for p in _DEFAULT_PRESETS:
@@ -101,8 +105,8 @@ def create_default_presets(blink_dir=None):
         n["kernelSource"].setValue(kernel_source)
         n["kernelSource"].setValue(kernel_source)  # double-set triggers compile
         n["name"].setValue(p["name"])
-        n["xpos"].setValue(p["xpos"])
-        n["ypos"].setValue(p["ypos"])
+        n["xpos"].setValue(int(ref_x + p["xpos"]))
+        n["ypos"].setValue(int(ref_y - 160))
         for key, val in p.items():
             if key in _SKIP:
                 continue
