@@ -30,15 +30,14 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     defineParam(seed,              "Seed",                 42);
   }
 
-  float hash(int n) {
-    int h = (n << 13) ^ n;
+  float hash(int p) {
+    int h = (p << 13) ^ p;
     h = h * (h * h * 15731 + 789221) + 1376312589;
-    return (float)(h & 0x7fffffff) * (1.0f / 2147483648.0f);
+    return float(h & 0x7fffffff) * (1.0f / 2147483648.0f);
   }
 
   float gaussian(float u1, float u2) {
-    float twoPi = 6.28318530718f;
-    return sqrt(-2.0f * log(max(u1, 1e-7f))) * cos(twoPi * u2);
+    return sqrt(-2.0f * log(max(u1, 1e-7f))) * cos(6.28318530718f * u2);
   }
 
   float fadeMask(float lum, float falloff) {
@@ -49,13 +48,11 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     float4 px = src();
 
     float sigma = intensity / sqrt(float(max(samples, 1)));
-    int base = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;
+    int   base  = pos.x * 73856093 ^ pos.y * 19349663 ^ seed;
 
-    float lum = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;
-
+    float lum       = 0.2126f * px.x + 0.7152f * px.y + 0.0722f * px.z;
     float noiseMask = 1.0f - noiseDarkFade * (1.0f - fadeMask(lum, noiseFadeFalloff));
-    float darkFloor = 0.05f * (1.0f - noiseDarkFade);
-    float lumScale  = sqrt(max(lum, 0.0f)) + darkFloor;
+    float lumScale  = sqrt(max(lum, 0.0f)) + 0.05f * (1.0f - noiseDarkFade);
     float noise     = sigma * lumScale * noiseMask;
 
     float lumaG = gaussian(hash(base + 0), hash(base + 1));
@@ -68,17 +65,11 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     float nb = px.z + (lumaG + cb) * noise;
 
     float ffMask = 1.0f - fireflyDarkFade * (1.0f - fadeMask(lum, fireflyFadeFalloff));
-    float ffProb = fireflyProb * ffMask;
-
-    float ff = hash(base + 99);
-    if (ff < ffProb) {
+    if (hash(base + 99) < fireflyProb * ffMask) {
       float spike = fireflyThresh + hash(base + 100) * fireflyThresh * 2.0f;
-      float fcr   = gaussian(hash(base + 101), hash(base + 102)) * fireflyChroma;
-      float fcg   = gaussian(hash(base + 103), hash(base + 104)) * fireflyChroma;
-      float fcb   = gaussian(hash(base + 105), hash(base + 106)) * fireflyChroma;
-      nr += spike * (1.0f + fcr);
-      ng += spike * (1.0f + fcg);
-      nb += spike * (1.0f + fcb);
+      nr += spike * (1.0f + gaussian(hash(base + 101), hash(base + 102)) * fireflyChroma);
+      ng += spike * (1.0f + gaussian(hash(base + 103), hash(base + 104)) * fireflyChroma);
+      nb += spike * (1.0f + gaussian(hash(base + 105), hash(base + 106)) * fireflyChroma);
     }
 
     dst() = float4(nr, ng, nb, px.w);
