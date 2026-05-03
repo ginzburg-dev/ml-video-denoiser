@@ -47,7 +47,6 @@ def _blink_generated_name(kernel_name, display_label):
 def _find_knob(node, knob_name, display_label):
     for candidate in (
         knob_name,
-        "%s_%s" % ("MCNoise", display_label),
         _blink_generated_name("MCNoise", display_label),
     ):
         knob = node.knob(candidate)

@@ -223,6 +223,7 @@ def denoise_temporal_sequence(
     use_amp: bool = True,
     color_space: str = "linear",
     temporal_flip: bool = True,
+    tile_size: int = 0,
 ) -> list[np.ndarray]:
     """Denoise every frame in *sequence*, with optional test-time temporal flip.
 
@@ -248,6 +249,7 @@ def denoise_temporal_sequence(
         use_amp:       AMP FP16 inference.
         color_space:   "linear" or "log".
         temporal_flip: Average forward and time-reversed passes (default True).
+        tile_size:     Tile-based inference size (0 = full frame).
 
     Returns:
         List of (H, W, C) float32 denoised frames, same length as *sequence*.
@@ -255,7 +257,7 @@ def denoise_temporal_sequence(
     n = len(sequence)
 
     forward = [
-        denoise_temporal_frame(model, sequence, i, device, use_amp, color_space)
+        denoise_temporal_frame(model, sequence, i, device, use_amp, color_space, tile_size)
         for i in range(n)
     ]
     if not temporal_flip:
@@ -264,7 +266,7 @@ def denoise_temporal_sequence(
     # Reversed sequence: frame i in reversed order ↔ frame (n-1-i) in original
     rev_seq = list(reversed(sequence))
     rev_out = [
-        denoise_temporal_frame(model, rev_seq, i, device, use_amp, color_space)
+        denoise_temporal_frame(model, rev_seq, i, device, use_amp, color_space, tile_size)
         for i in range(n)
     ]
     backward = list(reversed(rev_out))
@@ -286,6 +288,7 @@ def denoise_temporal_frame(
     device: torch.device,
     use_amp: bool = True,
     color_space: str = "linear",
+    tile_size: int = 0,
 ) -> np.ndarray:
     """Run a temporal model on the window centred at ``frame_idx``."""
     num_frames = model._num_frames
@@ -301,12 +304,46 @@ def denoise_temporal_frame(
 
     model.eval()
     with torch.no_grad():
-        with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
-            output = model(x)
+        if tile_size > 0:
+            output = _tile_inference_temporal(model, x, tile_size, use_amp, device)
+        else:
+            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
+                output = model(x)
     output = _inverse_color_space_tensor(output, color_space)
 
     ref_h, ref_w = sequence[frame_idx].shape[:2]
     return output.squeeze(0).permute(1, 2, 0).cpu().float().numpy()[:ref_h, :ref_w]
+
+
+def _tile_inference_temporal(
+    model: torch.nn.Module,
+    x: Tensor,
+    tile_size: int,
+    use_amp: bool,
+    device: torch.device,
+) -> Tensor:
+    """Run temporal/cascade inference on overlapping spatial tiles."""
+    _, _, _, h, w = x.shape
+    overlap = tile_size // 8
+    stride = tile_size - overlap
+
+    output = torch.zeros((1, 3, h, w), device=device, dtype=x.dtype)
+    weights = torch.zeros(1, 1, h, w, device=device, dtype=x.dtype)
+
+    for y in range(0, h, stride):
+        for xi in range(0, w, stride):
+            y1, y2 = y, min(y + tile_size, h)
+            x1, x2 = xi, min(xi + tile_size, w)
+            tile = x[:, :, :, y1:y2, x1:x2]
+
+            with torch.amp.autocast("cuda", enabled=use_amp and device.type == "cuda"):
+                pred = model(tile)
+
+            ramp = _make_ramp(pred.shape[-2], pred.shape[-1], overlap, device).to(pred.dtype)
+            output[:, :, y1:y2, x1:x2] += pred * ramp
+            weights[:, :, y1:y2, x1:x2] += ramp
+
+    return output / weights.clamp(min=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +362,7 @@ def _load_alpha(path: Path) -> Optional[np.ndarray]:
 
         with OpenEXR.File(str(path)) as exr:
             channels = exr.parts[0].channels
-            channel = channels.get("RGBA") or channels.get("A")
+            channel = channels.get("A")
             if channel is None:
                 return None
             alpha = np.asarray(channel.pixels, dtype=np.float32)
@@ -561,8 +598,6 @@ def main() -> None:
     psnr_values, ssim_values = [], []
 
     if model_type in ("temporal", "refined_temporal", "cascade"):
-        if args.tile > 0:
-            parser.error("--tile is not supported for temporal inference.")
         noisy_paths = [noisy_path for noisy_path, _ in pairs]
         noisy_sequence = [_load_image(path) for path in noisy_paths]
         if args.sigma > 0:
@@ -576,7 +611,7 @@ def main() -> None:
             print("Temporal flip averaging enabled (2× inference, --no-temporal-flip to disable).")
         denoised_sequence = denoise_temporal_sequence(
             model, noisy_sequence, device, use_amp,
-            color_space=color_space, temporal_flip=temporal_flip,
+            color_space=color_space, temporal_flip=temporal_flip, tile_size=args.tile,
         )
 
         for (noisy_path, clean_path), output_img in zip(pairs, denoised_sequence):
@@ -592,7 +627,8 @@ def main() -> None:
 
             if args.output:
                 exr_header = _read_exr_header(noisy_path)
-                _save_image(Path(args.output) / noisy_path.name, output_img, exr_header=exr_header)
+                alpha = _load_alpha(noisy_path)
+                _save_image(Path(args.output) / noisy_path.name, output_img, alpha=alpha, exr_header=exr_header)
     else:
         single_file = len(pairs) == 1 and Path(args.input).is_file() if args.input else False
         for noisy_path, clean_path in pairs:
@@ -622,7 +658,8 @@ def main() -> None:
             if args.output:
                 out = Path(args.output) if single_file else Path(args.output) / noisy_path.name
                 exr_header = _read_exr_header(noisy_path)
-                _save_image(out, output_img, exr_header=exr_header)
+                alpha = _load_alpha(noisy_path)
+                _save_image(out, output_img, alpha=alpha, exr_header=exr_header)
 
     if psnr_values:
         print(f"\nMean PSNR: {np.mean(psnr_values):.2f} dB")
