@@ -112,8 +112,11 @@ def export_selected(output_path):
         nuke.message(msg)
         return
 
-    with open(output_path, "w") as f:
-        f.write(json.dumps(presets, indent=2))
+    content = json.dumps(presets, indent=2)
+    if not isinstance(content, bytes):
+        content = content.encode("utf-8")
+    with open(output_path, "wb") as f:
+        f.write(content)
 
     msg = "Exported %d preset(s) to:\n%s" % (len(presets), output_path)
     if skipped:
