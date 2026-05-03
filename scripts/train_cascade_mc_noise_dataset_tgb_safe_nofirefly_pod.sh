@@ -189,8 +189,7 @@ else
     --freeze-spatial \
     --output "$STAGE2_OUTPUT" \
     --workers "$WORKERS" \
-    --epochs "$STAGE2_EPOCHS" \
-    $(_resume_flag "$STAGE2_OUTPUT")
+    --epochs "$STAGE2_EPOCHS"
 fi
 
 # ---------------------------------------------------------------------------
