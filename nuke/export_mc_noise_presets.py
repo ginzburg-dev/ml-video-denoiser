@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Export selected MCNoise nodes from Nuke as a weighted JSON preset bank.
 
 Usage -- paste into the Nuke Script Editor and run, or attach to a button knob:
@@ -14,34 +15,39 @@ Or inline on a button knob (Python tab):
 
 Each selected node must have knobs matching MCNoise.blink param names:
     samples, intensity, chromaSpread, noiseDarkFade, noiseFadeFalloff,
-    firefly Thresh, fireflyProb, fireflyChroma, fireflyDarkFade, fireflyFadeFalloff
+    fireflyThresh, fireflyProb, fireflyChroma, fireflyDarkFade, fireflyFadeFalloff
     mc_weight  (user knob for training sampling weight, default 1.0)
     seed       (optional, ignored during training -- PyTorch RNG is used instead)
 
 The node name becomes the preset "name" in the JSON.
 JSON keys are written as snake_case so training.py can load them directly.
+
+Compatible with Python 2.7+ (Nuke 11+) and Python 3.x.
 """
 
+from __future__ import absolute_import, print_function
+
+import io
 import json
 
 import nuke
 
 # Nuke BlinkScript knob name -> JSON / Python key
 _KNOB_MAP = (
-    ("intensity",         "intensity"),
-    ("samples",           "samples"),
-    ("chromaSpread",      "chroma_spread"),
-    ("noiseDarkFade",     "noise_dark_fade"),
-    ("noiseFadeFalloff",  "noise_fade_falloff"),
-    ("fireflyThresh",     "firefly_thresh"),
-    ("fireflyProb",       "firefly_prob"),
-    ("fireflyChroma",     "firefly_chroma"),
-    ("fireflyDarkFade",   "firefly_dark_fade"),
-    ("fireflyFadeFalloff","firefly_fade_falloff"),
+    ("intensity",          "intensity"),
+    ("samples",            "samples"),
+    ("chromaSpread",       "chroma_spread"),
+    ("noiseDarkFade",      "noise_dark_fade"),
+    ("noiseFadeFalloff",   "noise_fade_falloff"),
+    ("fireflyThresh",      "firefly_thresh"),
+    ("fireflyProb",        "firefly_prob"),
+    ("fireflyChroma",      "firefly_chroma"),
+    ("fireflyDarkFade",    "firefly_dark_fade"),
+    ("fireflyFadeFalloff", "firefly_fade_falloff"),
 )
 
 
-def _read_knob(node: nuke.Node, knob_name: str, json_key: str):
+def _read_knob(node, knob_name, json_key):
     knob = node.knob(knob_name)
     if knob is None:
         return None
@@ -49,7 +55,7 @@ def _read_knob(node: nuke.Node, knob_name: str, json_key: str):
     return int(val) if json_key == "samples" else float(val)
 
 
-def export_all(output_path: str) -> None:
+def export_all(output_path):
     """Export every node in the script that looks like an MCNoise node."""
     candidates = [
         n for n in nuke.allNodes()
@@ -71,7 +77,7 @@ def export_all(output_path: str) -> None:
         n.setSelected(True)
 
 
-def export_selected(output_path: str) -> None:
+def export_selected(output_path):
     """Export currently selected nodes to a JSON preset bank."""
     selected = nuke.selectedNodes()
     if not selected:
@@ -95,7 +101,7 @@ def export_selected(output_path: str) -> None:
                 entry[json_key] = val
 
         if missing:
-            skipped.append(f"{node.name()} (missing: {', '.join(missing)})")
+            skipped.append("%s (missing: %s)" % (node.name(), ", ".join(missing)))
             continue
 
         presets.append(entry)
@@ -107,10 +113,10 @@ def export_selected(output_path: str) -> None:
         nuke.message(msg)
         return
 
-    with open(output_path, "w") as f:
+    with io.open(output_path, "w", encoding="utf-8") as f:
         json.dump(presets, f, indent=2)
 
-    msg = f"Exported {len(presets)} preset(s) to:\n{output_path}"
+    msg = "Exported %d preset(s) to:\n%s" % (len(presets), output_path)
     if skipped:
-        msg += f"\n\nSkipped {len(skipped)} node(s):\n" + "\n".join(skipped)
+        msg += "\n\nSkipped %d node(s):\n%s" % (len(skipped), "\n".join(skipped))
     nuke.message(msg)
