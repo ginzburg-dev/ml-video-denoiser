@@ -938,7 +938,7 @@ def _make_noise_generator(
             parser.error("--patch-pool and --noise-profile are not used with --noise mc.")
         if args.noise_mc_config:
             return MCNoisePresetBank.from_json(args.noise_mc_config)
-        return MCNoiseGenerator()
+        return MCNoisePresetBank.default()
 
     patch_pools = _parse_pool_specs(args.patch_pool) if args.patch_pool else None
     return MixedNoiseGenerator.default(

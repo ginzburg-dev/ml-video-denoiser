@@ -303,6 +303,19 @@ class MCNoisePresetBank:
         self._probs = [w / total for w in weights]
 
     @classmethod
+    def default(cls) -> "MCNoisePresetBank":
+        """Light × 1, medium × 3, heavy × 1 — sensible coverage for most content."""
+        return cls([
+            (MCNoiseGenerator(intensity=0.5,  samples=32, chroma_spread=0.08,
+                              firefly_prob=0.001),                              1.0, "light"),
+            (MCNoiseGenerator(intensity=1.0,  samples=16, chroma_spread=0.12,
+                              firefly_prob=0.003),                              3.0, "medium"),
+            (MCNoiseGenerator(intensity=2.0,  samples=8,  chroma_spread=0.18,
+                              firefly_thresh=7.0, firefly_prob=0.005,
+                              firefly_chroma=0.15),                             1.0, "heavy"),
+        ])
+
+    @classmethod
     def from_json(cls, path: str) -> "MCNoisePresetBank":
         with open(path) as f:
             data = json.load(f)
@@ -318,7 +331,7 @@ class MCNoisePresetBank:
         return cls(entries)
 
     def __call__(self, clean: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        (gen, _), = random.choices(self._generators, weights=self._probs, k=1)
+        gen, _ = random.choices(self._generators, weights=self._probs, k=1)[0]
         return gen(clean)
 
 
