@@ -27,7 +27,7 @@ import json
 import nuke
 
 # Nuke BlinkScript knob name -> JSON / Python key
-_KNOB_MAP: tuple[tuple[str, str], ...] = (
+_KNOB_MAP = (
     ("intensity",         "intensity"),
     ("samples",           "samples"),
     ("chromaSpread",      "chroma_spread"),
@@ -81,7 +81,7 @@ def export_selected(output_path: str) -> None:
     presets = []
     skipped = []
     for node in selected:
-        entry: dict = {"name": node.name()}
+        entry = {"name": node.name()}
 
         weight_knob = node.knob("mc_weight")
         entry["weight"] = float(weight_knob.value()) if weight_knob else 1.0
