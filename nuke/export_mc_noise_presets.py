@@ -25,19 +25,49 @@ import json
 
 import nuke
 
-# Nuke BlinkScript knob name -> JSON / Python key
+# Raw kernel param name, JSON / Python key, Blink display label
 _KNOB_MAP = (
-    ("intensity",          "intensity"),
-    ("samples",            "samples"),
-    ("chromaSpread",       "chroma_spread"),
-    ("noiseDarkFade",      "noise_dark_fade"),
-    ("noiseFadeFalloff",   "noise_fade_falloff"),
-    ("fireflyThresh",      "firefly_thresh"),
-    ("fireflyProb",        "firefly_prob"),
-    ("fireflyChroma",      "firefly_chroma"),
-    ("fireflyDarkFade",    "firefly_dark_fade"),
-    ("fireflyFadeFalloff", "firefly_fade_falloff"),
+    ("intensity",          "intensity",           "Intensity"),
+    ("samples",            "samples",             "Samples"),
+    ("chromaSpread",       "chroma_spread",       "Chroma Spread"),
+    ("noiseDarkFade",      "noise_dark_fade",     "Noise Dark Fade"),
+    ("noiseFadeFalloff",   "noise_fade_falloff",  "Noise Fade Falloff"),
+    ("fireflyThresh",      "firefly_thresh",      "Firefly Thresh"),
+    ("fireflyProb",        "firefly_prob",        "Firefly Prob"),
+    ("fireflyChroma",      "firefly_chroma",      "Firefly Chroma"),
+    ("fireflyDarkFade",    "firefly_dark_fade",   "Firefly Dark Fade"),
+    ("fireflyFadeFalloff", "firefly_fade_falloff","Firefly Fade Falloff"),
 )
+
+
+def _blink_generated_name(kernel_name, display_label):
+    return "%s_%s" % (kernel_name, "".join(display_label.split()))
+
+
+def _find_knob(node, knob_name, display_label):
+    for candidate in (
+        knob_name,
+        "%s_%s" % ("MCNoise", display_label),
+        _blink_generated_name("MCNoise", display_label),
+    ):
+        knob = node.knob(candidate)
+        if knob is not None:
+            return knob
+
+    suffixes = (
+        "_" + display_label,
+        "_" + "".join(display_label.split()),
+    )
+    for existing_name, knob in node.knobs().items():
+        if existing_name.endswith(suffixes):
+            return knob
+        try:
+            if knob.label() == display_label:
+                return knob
+        except Exception:
+            pass
+
+    return None
 
 
 def _is_mcnoise_node(node):
@@ -45,7 +75,8 @@ def _is_mcnoise_node(node):
     if ks is not None and "kernel MCNoise" in ks.value():
         return True
 
-    return all(node.knob(knob_name) is not None for knob_name, _ in _KNOB_MAP)
+    required = ("Intensity", "Samples", "Chroma Spread")
+    return all(_find_knob(node, "", label) is not None for label in required)
 
 
 def _compile(node):
@@ -62,8 +93,8 @@ def _compile(node):
         ks.setValue(ks.value())
 
 
-def _read_knob(node, knob_name, json_key):
-    knob = node.knob(knob_name)
+def _read_knob(node, knob_name, json_key, display_label):
+    knob = _find_knob(node, knob_name, display_label)
     if knob is None:
         return None
     val = knob.value()
@@ -103,12 +134,12 @@ def export_selected(output_path):
     for node in selected:
         entry = {"name": node.name()}
 
-        weight_knob = node.knob("mc_weight")
+        weight_knob = _find_knob(node, "mc_weight", "Training Weight")
         entry["weight"] = float(weight_knob.value()) if weight_knob else 1.0
 
         missing = []
-        for knob_name, json_key in _KNOB_MAP:
-            val = _read_knob(node, knob_name, json_key)
+        for knob_name, json_key, display_label in _KNOB_MAP:
+            val = _read_knob(node, knob_name, json_key, display_label)
             if val is None:
                 missing.append(knob_name)
             else:
