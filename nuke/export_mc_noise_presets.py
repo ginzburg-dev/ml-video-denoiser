@@ -27,7 +27,6 @@ Compatible with Python 2.7+ (Nuke 11+) and Python 3.x.
 
 from __future__ import absolute_import, print_function
 
-import io
 import json
 
 import nuke
@@ -113,8 +112,8 @@ def export_selected(output_path):
         nuke.message(msg)
         return
 
-    with io.open(output_path, "w", encoding="utf-8") as f:
-        json.dump(presets, f, indent=2)
+    with open(output_path, "wb") as f:
+        f.write(json.dumps(presets, indent=2).encode("utf-8"))
 
     msg = "Exported %d preset(s) to:\n%s" % (len(presets), output_path)
     if skipped:
