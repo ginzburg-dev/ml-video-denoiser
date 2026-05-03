@@ -49,7 +49,7 @@ STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/cascade_${SIZE}_stage3${_sfx}}"
 # ---------------------------------------------------------------------------
 # Hyperparameters
 # ---------------------------------------------------------------------------
-WORKERS="${WORKERS:-4}"
+WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 PATCH_SIZE="${PATCH_SIZE:-128}"
 PATCHES_PER_IMAGE="${PATCHES_PER_IMAGE:-256}"
