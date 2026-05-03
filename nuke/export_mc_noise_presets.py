@@ -28,8 +28,36 @@ Compatible with Python 2.7+ (Nuke 11+) and Python 3.x.
 from __future__ import absolute_import, print_function
 
 import json
+import os
 
 import nuke
+
+_DEFAULT_PRESETS = (
+    {
+        "name": "MCNoise_light",
+        "intensity": 0.5, "samples": 32, "chromaSpread": 0.08,
+        "noiseDarkFade": 0.0, "noiseFadeFalloff": 1.0,
+        "fireflyThresh": 6.0, "fireflyProb": 0.001, "fireflyChroma": 0.1,
+        "fireflyDarkFade": 0.0, "fireflyFadeFalloff": 1.0,
+        "mc_weight": 1.0, "xpos": -250, "ypos": 0,
+    },
+    {
+        "name": "MCNoise_medium",
+        "intensity": 1.0, "samples": 16, "chromaSpread": 0.12,
+        "noiseDarkFade": 0.0, "noiseFadeFalloff": 1.0,
+        "fireflyThresh": 6.0, "fireflyProb": 0.003, "fireflyChroma": 0.1,
+        "fireflyDarkFade": 0.0, "fireflyFadeFalloff": 1.0,
+        "mc_weight": 3.0, "xpos": 0, "ypos": 0,
+    },
+    {
+        "name": "MCNoise_heavy",
+        "intensity": 2.0, "samples": 8, "chromaSpread": 0.18,
+        "noiseDarkFade": 0.0, "noiseFadeFalloff": 1.0,
+        "fireflyThresh": 7.0, "fireflyProb": 0.005, "fireflyChroma": 0.15,
+        "fireflyDarkFade": 0.0, "fireflyFadeFalloff": 1.0,
+        "mc_weight": 1.0, "xpos": 250, "ypos": 0,
+    },
+)
 
 # Nuke BlinkScript knob name -> JSON / Python key
 _KNOB_MAP = (
@@ -52,6 +80,38 @@ def _read_knob(node, knob_name, json_key):
         return None
     val = knob.value()
     return int(val) if json_key == "samples" else float(val)
+
+
+def create_default_presets(blink_dir=None):
+    """Create light / medium / heavy MCNoise BlinkScript nodes in the current script."""
+    if blink_dir is None:
+        blink_dir = os.path.dirname(os.path.abspath(__file__))
+    blink_path = os.path.join(blink_dir, "MCNoise.blink")
+    if not os.path.exists(blink_path):
+        nuke.message("MCNoise.blink not found at:\n%s" % blink_path)
+        return
+
+    with open(blink_path, "r") as f:
+        kernel_source = f.read()
+
+    _SKIP = ("name", "xpos", "ypos")
+    created = []
+    for p in _DEFAULT_PRESETS:
+        n = nuke.nodes.BlinkScript()
+        n["kernelSource"].setValue(kernel_source)
+        n["kernelSource"].setValue(kernel_source)  # double-set triggers compile
+        n["name"].setValue(p["name"])
+        n["xpos"].setValue(p["xpos"])
+        n["ypos"].setValue(p["ypos"])
+        for key, val in p.items():
+            if key in _SKIP:
+                continue
+            k = n.knob(key)
+            if k:
+                k.setValue(val)
+        created.append(p["name"])
+
+    nuke.message("Created %d MCNoise nodes:\n%s" % (len(created), "\n".join(created)))
 
 
 def export_all(output_path):
