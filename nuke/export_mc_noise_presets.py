@@ -1,6 +1,6 @@
 """Export selected MCNoise nodes from Nuke as a weighted JSON preset bank.
 
-Usage — paste into the Nuke Script Editor and run, or attach to a button knob:
+Usage -- paste into the Nuke Script Editor and run, or attach to a button knob:
 
     import sys
     sys.path.insert(0, "/path/to/ml-video-denoiser/nuke")
@@ -16,7 +16,7 @@ Each selected node must have knobs matching MCNoise.blink param names:
     samples, intensity, chromaSpread, noiseDarkFade, noiseFadeFalloff,
     firefly Thresh, fireflyProb, fireflyChroma, fireflyDarkFade, fireflyFadeFalloff
     mc_weight  (user knob for training sampling weight, default 1.0)
-    seed       (optional, ignored during training — PyTorch RNG is used instead)
+    seed       (optional, ignored during training -- PyTorch RNG is used instead)
 
 The node name becomes the preset "name" in the JSON.
 JSON keys are written as snake_case so training.py can load them directly.
@@ -26,7 +26,7 @@ import json
 
 import nuke
 
-# Nuke BlinkScript knob name → JSON / Python key
+# Nuke BlinkScript knob name -> JSON / Python key
 _KNOB_MAP: tuple[tuple[str, str], ...] = (
     ("intensity",         "intensity"),
     ("samples",           "samples"),
