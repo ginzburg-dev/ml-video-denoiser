@@ -40,6 +40,28 @@ _KNOB_MAP = (
 )
 
 
+def _is_mcnoise_node(node):
+    ks = node.knob("kernelSource")
+    if ks is not None and "kernel MCNoise" in ks.value():
+        return True
+
+    return all(node.knob(knob_name) is not None for knob_name, _ in _KNOB_MAP)
+
+
+def _compile(node):
+    recompile = node.knob("recompile")
+    if recompile is not None:
+        try:
+            recompile.execute()
+            return
+        except Exception:
+            pass
+
+    ks = node.knob("kernelSource")
+    if ks is not None:
+        ks.setValue(ks.value())
+
+
 def _read_knob(node, knob_name, json_key):
     knob = node.knob(knob_name)
     if knob is None:
@@ -50,10 +72,7 @@ def _read_knob(node, knob_name, json_key):
 
 def export_all(output_path):
     """Export every MCNoise node in the script."""
-    candidates = [
-        n for n in nuke.allNodes()
-        if n.knob("intensity") and n.knob("chromaSpread") and n.knob("mc_weight")
-    ]
+    candidates = [n for n in nuke.allNodes() if _is_mcnoise_node(n)]
     if not candidates:
         nuke.message("No MCNoise nodes found in the script.")
         return
@@ -75,6 +94,9 @@ def export_selected(output_path):
     if not selected:
         nuke.message("No nodes selected.\nSelect one or more MCNoise nodes and try again.")
         return
+
+    for node in selected:
+        _compile(node)
 
     presets = []
     skipped = []
