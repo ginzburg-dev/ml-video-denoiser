@@ -15,6 +15,7 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     float fireflyDarkFade;
     float fireflyFadeFalloff;
     int   seed;
+    float mc_weight;
 
   void define() {
     defineParam(samples,           "Samples",              16);
@@ -28,6 +29,7 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     defineParam(fireflyDarkFade,   "Firefly Dark Fade",    0.0f);
     defineParam(fireflyFadeFalloff,"Firefly Fade Falloff", 1.0f);
     defineParam(seed,              "Seed",                 42);
+    defineParam(mc_weight,         "Training Weight",      1.0f);
   }
 
   float hash(int p) {
