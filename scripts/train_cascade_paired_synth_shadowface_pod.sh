@@ -253,4 +253,4 @@ echo "========================================================"
 echo "  Done. Final weights: $STAGE3_OUTPUT/best.pth"
 echo "========================================================"
 
-runpodctl stop pod $RUNPOD_POD_ID
+# runpodctl stop pod $RUNPOD_POD_ID
