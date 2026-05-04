@@ -66,8 +66,8 @@ echo "  Noisy: $OUTPUT_NOISY"
 echo "  Clean: $OUTPUT_CLEAN"
 echo "========================================================"
 
-cp -r "$OUTPUT_NOISY" "$LOCAL_STORAGE/tgb_train/TGB_training/train_noisy_synth"
-cp -r "$OUTPUT_CLEAN" "$LOCAL_STORAGE/tgb_train/TGB_training/train_clean_synth"
+cp -r "$OUTPUT_NOISY" "~/data/tgb_train/TGB_training/train_noisy_synth"
+cp -r "$OUTPUT_CLEAN" "~/data/tgb_train/TGB_training/train_clean_synth"
 
 echo ""
 echo "========================================================"
