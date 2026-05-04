@@ -110,7 +110,7 @@ def main() -> None:
         sys.exit(f"ERROR: --presets not found: {preset_path}")
 
     bank = MCNoisePresetBank.from_json(str(preset_path))
-    presets = bank._entries  # (MCNoiseGenerator, weight, name)
+    presets = bank._generators  # (MCNoiseGenerator, name)
     print(f"Loaded {len(presets)} presets from {preset_path.name}")
 
     rgb, alpha, header = _load_image(clean_path)
@@ -121,8 +121,9 @@ def main() -> None:
     clean_out.mkdir(parents=True, exist_ok=True)
 
     clean_np = clean_t.cpu().numpy().transpose(1, 2, 0)
+    base_seed = args.seed if args.seed is not None else 0
 
-    for i, (gen, _weight, name) in enumerate(presets, 1):
+    for i, (gen, name) in enumerate(presets, 1):
         noisy_path = output_root / f"{name}.exr"
         clean_copy_path = clean_out / f"{name}.exr"
 
@@ -130,6 +131,7 @@ def main() -> None:
             print(f"  skip  {name}  ({i}/{len(presets)})", flush=True)
             continue
 
+        torch.manual_seed(base_seed + i)
         noisy_t, _, _ = gen(clean_t)
 
         if alpha_t is not None:
