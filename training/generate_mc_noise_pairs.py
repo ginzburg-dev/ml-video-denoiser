@@ -30,24 +30,24 @@ def _load_exr(path: Path) -> tuple[np.ndarray, np.ndarray | None, dict]:
         channels = exr.parts[0].channels
         header = dict(exr.parts[0].header)
 
-    keys = list(channels.keys())
-    if "RGBA" in channels:
-        rgba = np.asarray(channels["RGBA"].pixels, dtype=np.float32)
-        rgb = rgba[..., :3]
-        alpha = np.clip(rgba[..., 3], 0.0, 1.0)
-    elif "RGB" in channels:
-        rgb = np.asarray(channels["RGB"].pixels, dtype=np.float32)[..., :3]
-        alpha = None
-    elif "R" in channels:
-        r = np.asarray(channels["R"].pixels, dtype=np.float32)
-        g = np.asarray(channels["G"].pixels, dtype=np.float32)
-        b = np.asarray(channels["B"].pixels, dtype=np.float32)
-        rgb = np.stack([r, g, b], axis=-1)
-        alpha = None
-        if "A" in channels:
-            alpha = np.clip(np.asarray(channels["A"].pixels, dtype=np.float32), 0.0, 1.0)
-    else:
-        raise KeyError(f"Cannot find RGB channels in EXR. Available channels: {keys}")
+        if "RGBA" in channels:
+            rgba = np.asarray(channels["RGBA"].pixels, dtype=np.float32)
+            rgb = rgba[..., :3]
+            alpha = np.clip(rgba[..., 3], 0.0, 1.0)
+        elif "RGB" in channels:
+            rgb = np.asarray(channels["RGB"].pixels, dtype=np.float32)[..., :3]
+            alpha = None
+        elif "R" in channels:
+            r = np.asarray(channels["R"].pixels, dtype=np.float32)
+            g = np.asarray(channels["G"].pixels, dtype=np.float32)
+            b = np.asarray(channels["B"].pixels, dtype=np.float32)
+            rgb = np.stack([r, g, b], axis=-1)
+            alpha = None
+            if "A" in channels:
+                alpha = np.clip(np.asarray(channels["A"].pixels, dtype=np.float32), 0.0, 1.0)
+        else:
+            available = ", ".join(sorted(channels.keys()))
+            raise KeyError(f"Cannot find RGB channels in EXR {path}. Available: {available}")
 
     return rgb, alpha, header
 
