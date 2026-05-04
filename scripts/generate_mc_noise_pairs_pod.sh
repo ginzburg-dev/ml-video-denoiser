@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# generate_mc_noise_pairs_pod.sh — generate synthetic paired noisy frames
-# from clean training sequences using all presets in a MCNoise JSON bank.
+# generate_mc_noise_pairs_pod.sh — generate synthetic paired noisy/clean frames
+# from a single clean image using all presets in a MCNoise JSON bank.
 #
-# Output structure:
-#   <OUTPUT_ROOT>/<preset_name>/<seq_name>/<frame.exr>
+# Output:
+#   <OUTPUT_NOISY>/<preset_name>.exr
+#   <OUTPUT_CLEAN>/<preset_name>.exr
 #
 # Usage:
 #   ./scripts/generate_mc_noise_pairs_pod.sh
 #
 # Override:
-#   PRESETS=/path/to/presets.json OUTPUT_ROOT=/workspace/data/train_noisy_synth \
+#   DATA_CLEAN=/path/to/frame.exr PRESETS=/path/to/presets.json \
 #     ./scripts/generate_mc_noise_pairs_pod.sh
 
 set -euo pipefail
@@ -17,16 +18,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TRAINING_DIR="$ROOT_DIR/training"
 
-DATA_CLEAN="${DATA_CLEAN:-/workspace/data/TGB_training/train_clean_lit/TGB1004140_mid}"
+DATA_CLEAN="${DATA_CLEAN:-/workspace/data/TGB_training/train_clean_lit/TGB1004140_mid/TGB1004140.0001.exr}"
 PRESETS="${PRESETS:-$ROOT_DIR/nuke/mc_noise_presets_tgb_lit_patch18_shadowface.json}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/workspace/data/TGB_training/train_noisy_synth}"
+OUTPUT_NOISY="${OUTPUT_NOISY:-/workspace/data/TGB_training/train_noisy_synth}"
+OUTPUT_CLEAN="${OUTPUT_CLEAN:-/workspace/data/TGB_training/train_clean_synth}"
 SEED="${SEED:-42}"
 SKIP_EXISTING="${SKIP_EXISTING:-0}"
 
 cd "$TRAINING_DIR"
 
-if [[ ! -d "$DATA_CLEAN" ]]; then
-  echo "ERROR: clean data directory not found: $DATA_CLEAN" >&2
+if [[ ! -f "$DATA_CLEAN" ]]; then
+  echo "ERROR: clean image not found: $DATA_CLEAN" >&2
   exit 1
 fi
 
@@ -37,23 +39,27 @@ fi
 
 echo "========================================================"
 echo "  MCNoise synthetic pair generation"
-echo "  Clean:    $DATA_CLEAN"
-echo "  Presets:  $PRESETS"
-echo "  Output:   $OUTPUT_ROOT"
-echo "  Seed:     $SEED"
+echo "  Clean:        $DATA_CLEAN"
+echo "  Presets:      $PRESETS"
+echo "  Output noisy: $OUTPUT_NOISY"
+echo "  Output clean: $OUTPUT_CLEAN"
+echo "  Seed:         $SEED"
 echo "========================================================"
 
 _skip_flag=""
 [[ "$SKIP_EXISTING" == "1" ]] && _skip_flag="--skip-existing"
 
 python generate_mc_noise_pairs.py \
-  --clean   "$DATA_CLEAN" \
-  --presets "$PRESETS" \
-  --output  "$OUTPUT_ROOT" \
-  --seed    "$SEED" \
+  --clean        "$DATA_CLEAN" \
+  --presets      "$PRESETS" \
+  --output       "$OUTPUT_NOISY" \
+  --output-clean "$OUTPUT_CLEAN" \
+  --seed         "$SEED" \
   $_skip_flag
 
 echo ""
 echo "========================================================"
-echo "  Done. Noisy frames at: $OUTPUT_ROOT"
+echo "  Done."
+echo "  Noisy: $OUTPUT_NOISY"
+echo "  Clean: $OUTPUT_CLEAN"
 echo "========================================================"
