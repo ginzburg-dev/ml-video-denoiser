@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# train_cascade_paired_synth_shadowface.sh — Three-stage NAFNetCascade training
+# train_cascade_paired_synth_shadowface_pod.sh — Three-stage NAFNetCascade training
 # on synthetic paired data generated from MCNoise shadowface presets.
 #
 # Stage 1  Spatial      NAFNet spatial denoiser on synthetic noisy→clean pairs
