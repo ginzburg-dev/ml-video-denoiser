@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
-# train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh — Three-stage NAFNetCascade
-# training with lit-calibrated red-channel-heavy MCNoise presets.
+# train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh — Three-stage NAFNetCascade training
+# with tile-calibrated, R-channel-corrected MCNoise presets (no dark fade).
 #
-# Proof target:
-#   Keep the original mid-proof setup, but fix the R-heavy chroma asymmetry seen
-#   in the lit pairs without changing dark-fade behavior yet.
+# Stage 1  Spatial      NAFNet spatial denoiser on clean sequences + MCNoise
+# Stage 2  Cascade      Load stage-1 weights, freeze spatial, train temporal stage only
+# Stage 3  Fine-tune    Unfreeze all, joint fine-tune at lower LR
+#
+# Usage:
+#   ./scripts/train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh
+#
+# Override any variable on the command line, e.g.:
+#   WORKERS=4 SIZE=small ./scripts/train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh
+#
+# Skip individual stages:
+#   SKIP_STAGE1=1 SPATIAL_WEIGHTS=/path/to/spatial/best.pth ./scripts/train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh
+#   SKIP_STAGE2=1 ./scripts/train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh
+#   SKIP_STAGE3=1 ./scripts/train_cascade_mc_noise_dataset_tgb_mid_lit_rfix_pod.sh
 
 set -euo pipefail
 
@@ -22,8 +33,8 @@ NOISE_MC_CONFIG="${NOISE_MC_CONFIG:-$ROOT_DIR/nuke/mc_noise_presets_tgb_mid_lit_
 # ---------------------------------------------------------------------------
 # Model / architecture
 # ---------------------------------------------------------------------------
-SIZE="${SIZE:-exp048}"
-NUM_FRAMES="${NUM_FRAMES:-3}"
+SIZE="${SIZE:-exp048}"              # tiny | small | exp048 | standard | wide
+NUM_FRAMES="${NUM_FRAMES:-3}"       # temporal window (odd, ≥3)
 TEMPORAL_BASE="${TEMPORAL_BASE:-32}"
 EXP_NAME="${EXP_NAME:-mc_noise_dataset_tgb_mid_lit_rfix}"
 
@@ -39,13 +50,13 @@ STAGE3_OUTPUT="${STAGE3_OUTPUT:-checkpoints/cascade_${SIZE}_stage3${_sfx}}"
 # ---------------------------------------------------------------------------
 # Hyperparameters
 # ---------------------------------------------------------------------------
-WORKERS="${WORKERS:-4}"
+WORKERS="${WORKERS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 PATCH_SIZE="${PATCH_SIZE:-128}"
-PATCHES_PER_IMAGE="${PATCHES_PER_IMAGE:-64}"
+PATCHES_PER_IMAGE="${PATCHES_PER_IMAGE:-256}"
 
-SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-60}"
-STAGE2_EPOCHS="${STAGE2_EPOCHS:-25}"
+SPATIAL_EPOCHS="${SPATIAL_EPOCHS:-50}"
+STAGE2_EPOCHS="${STAGE2_EPOCHS:-40}"
 STAGE3_EPOCHS="${STAGE3_EPOCHS:-50}"
 
 SPATIAL_LR="${SPATIAL_LR:-1e-4}"
@@ -60,11 +71,11 @@ STAGE3_LOSS="${STAGE3_LOSS:-l1}"
 COLOR_SPACE="${COLOR_SPACE:-linear}"
 
 SPATIAL_SCHEDULER="${SPATIAL_SCHEDULER:-none}"
-SPATIAL_PLATEAU_PATIENCE="${SPATIAL_PLATEAU_PATIENCE:-5}"
-STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-plateau}"
-STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-5}"
-STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-plateau}"
-STAGE3_PLATEAU_PATIENCE="${STAGE3_PLATEAU_PATIENCE:-10}"
+SPATIAL_PLATEAU_PATIENCE="${SPATIAL_PLATEAU_PATIENCE:-20}"
+STAGE2_SCHEDULER="${STAGE2_SCHEDULER:-none}"
+STAGE2_PLATEAU_PATIENCE="${STAGE2_PLATEAU_PATIENCE:-20}"
+STAGE3_SCHEDULER="${STAGE3_SCHEDULER:-none}"
+STAGE3_PLATEAU_PATIENCE="${STAGE3_PLATEAU_PATIENCE:-20}"
 
 SPATIAL_FRAMES_PER_SEQUENCE="${SPATIAL_FRAMES_PER_SEQUENCE:-5}"
 SPATIAL_VAL_FRAMES_PER_SEQUENCE="${SPATIAL_VAL_FRAMES_PER_SEQUENCE:-3}"
@@ -102,11 +113,14 @@ echo "  Num frames:       $NUM_FRAMES"
 echo "  Temporal base:    $TEMPORAL_BASE"
 echo "  Experiment:       ${EXP_NAME:-<default>}"
 echo "  MC config:        $NOISE_MC_CONFIG"
-echo "  Stage 1 output:   $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ \"$SKIP_STAGE1\" == \"1\" ] && echo \" [SKIP]\")"
-echo "  Stage 2 output:   $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ \"$SKIP_STAGE2\" == \"1\" ] && echo \" [SKIP]\")"
-echo "  Stage 3 output:   $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ \"$SKIP_STAGE3\" == \"1\" ] && echo \" [SKIP]\")"
+echo "  Stage 1 output:   $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ "$SKIP_STAGE1" == "1" ] && echo " [SKIP]")"
+echo "  Stage 2 output:   $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ "$SKIP_STAGE2" == "1" ] && echo " [SKIP]")"
+echo "  Stage 3 output:   $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ "$SKIP_STAGE3" == "1" ] && echo " [SKIP]")"
 echo "========================================================"
 
+# ---------------------------------------------------------------------------
+# Stage 1 — Spatial denoiser
+# ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE1" == "1" ]]; then
   echo ""
   echo "--- Stage 1 skipped (SKIP_STAGE1=1), using weights: $SPATIAL_WEIGHTS ---"
@@ -140,6 +154,9 @@ else
     $(_resume_flag "$STAGE1_OUTPUT")
 fi
 
+# ---------------------------------------------------------------------------
+# Stage 2 — Cascade temporal stage only (spatial frozen)
+# ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE2" == "1" ]]; then
   echo ""
   echo "--- Stage 2 skipped (SKIP_STAGE2=1) ---"
@@ -177,6 +194,9 @@ else
     $(_resume_flag "$STAGE2_OUTPUT")
 fi
 
+# ---------------------------------------------------------------------------
+# Stage 3 — Joint fine-tune (all layers)
+# ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE3" == "1" ]]; then
   echo ""
   echo "--- Stage 3 skipped (SKIP_STAGE3=1) ---"
@@ -206,7 +226,7 @@ else
     --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
     --val-crop-mode grid \
     --val-grid-size 3 \
-    --resume "$([[ \"$RESUME\" == \"1\" && -f \"$STAGE3_OUTPUT/last.pth\" ]] && echo \"$STAGE3_OUTPUT/last.pth\" || echo \"$STAGE2_OUTPUT/best.pth\")" \
+    --resume "$([[ "$RESUME" == "1" && -f "$STAGE3_OUTPUT/last.pth" ]] && echo "$STAGE3_OUTPUT/last.pth" || echo "$STAGE2_OUTPUT/best.pth")" \
     --output "$STAGE3_OUTPUT" \
     --workers "$WORKERS" \
     --epochs "$STAGE3_EPOCHS"
