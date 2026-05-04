@@ -111,7 +111,7 @@ if [[ "$SKIP_STAGE1" == "1" ]]; then
 else
   echo ""
   echo "--- Stage 1: spatial ---"
-  uv run python training.py \
+  python training.py \
     --model spatial \
     --size "$SIZE" \
     --color-space "$COLOR_SPACE" \
@@ -144,7 +144,7 @@ if [[ "$SKIP_STAGE2" == "1" ]]; then
 else
   echo ""
   echo "--- Stage 2: cascade temporal stage (spatial frozen) ---"
-  uv run python training.py \
+  python training.py \
     --model cascade \
     --size "$SIZE" \
     --num-frames "$NUM_FRAMES" \
@@ -181,7 +181,7 @@ if [[ "$SKIP_STAGE3" == "1" ]]; then
 else
   echo ""
   echo "--- Stage 3: joint fine-tune ---"
-  uv run python training.py \
+  python training.py \
     --model cascade \
     --size "$SIZE" \
     --num-frames "$NUM_FRAMES" \
