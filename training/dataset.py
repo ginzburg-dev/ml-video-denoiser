@@ -426,6 +426,7 @@ class PatchDataset(Dataset):
         crop_mode: str = "random",
         crop_grid_size: int = 2,
         frames_per_sequence: Optional[int] = None,
+        preload: bool = False,
     ) -> None:
         self._paths, _ = _collect_images_spread(image_dirs, frames_per_sequence)
         if not self._paths:
@@ -436,6 +437,15 @@ class PatchDataset(Dataset):
         self._augment = augment
         self._crop_mode = crop_mode
         self._crop_grid_size = crop_grid_size
+        self._image_cache: Optional[dict[Path, np.ndarray]] = None
+        if preload:
+            self._image_cache = {}
+            print(f"Preloading {len(self._paths)} images into RAM...", flush=True)
+            for i, path in enumerate(self._paths, 1):
+                self._image_cache[path] = _load_image(path)
+                if i % 20 == 0 or i == len(self._paths):
+                    print(f"  {i}/{len(self._paths)} loaded", flush=True)
+            print("Preload complete.", flush=True)
 
     def __len__(self) -> int:
         return len(self._paths) * self._patches_per_image
@@ -443,7 +453,8 @@ class PatchDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
         img_idx = idx // self._patches_per_image
         patch_idx = idx % self._patches_per_image
-        img = _load_image(self._paths[img_idx])
+        path = self._paths[img_idx]
+        img = self._image_cache[path] if self._image_cache is not None else _load_image(path)
         if self._crop_mode == "grid":
             img = _pad_frame_to_shape(img, max(img.shape[0], self._patch_size), max(img.shape[1], self._patch_size))
             h, w, _ = img.shape
@@ -514,6 +525,7 @@ class VideoSequenceDataset(Dataset):
         augment: bool = True,
         crop_mode: str = "random",
         crop_grid_size: int = 2,
+        preload: bool = False,
     ) -> None:
         self._sequences = self._collect_sequences(sequence_dirs, num_frames)
         if not self._sequences:
@@ -528,6 +540,16 @@ class VideoSequenceDataset(Dataset):
         self._crop_mode = crop_mode
         self._crop_grid_size = crop_grid_size
         self._num_sequences = len(self._sequences)
+        self._image_cache: Optional[dict[Path, np.ndarray]] = None
+        if preload:
+            all_paths: set[Path] = {p for seq in self._sequences for p in seq}
+            self._image_cache = {}
+            print(f"Preloading {len(all_paths)} frames into RAM...", flush=True)
+            for i, path in enumerate(sorted(all_paths), 1):
+                self._image_cache[path] = _load_image(path)
+                if i % 20 == 0 or i == len(all_paths):
+                    print(f"  {i}/{len(all_paths)} loaded", flush=True)
+            print("Preload complete.", flush=True)
         if self._random_windows and self._windows_per_sequence <= 0:
             raise ValueError("windows_per_sequence must be positive when random_windows is enabled")
         self._clips = (
@@ -607,7 +629,10 @@ class VideoSequenceDataset(Dataset):
         frame_paths = self._sample_frame_paths(idx)
 
         # Load all frames
-        frames = [_load_image(p) for p in frame_paths]
+        if self._image_cache is not None:
+            frames = [self._image_cache[p] for p in frame_paths]
+        else:
+            frames = [_load_image(p) for p in frame_paths]
         ps = self._patch_size
         target_h = max(ps, max(frame.shape[0] for frame in frames))
         target_w = max(ps, max(frame.shape[1] for frame in frames))
@@ -824,6 +849,7 @@ class PairedPatchDataset(Dataset):
         crop_grid_size: int = 2,
         frames_per_sequence: Optional[int] = None,
         random_frames: bool = False,
+        preload: bool = False,
     ) -> None:
         self._clean_dir = Path(clean_dir)
         self._noisy_dir = Path(noisy_dir)
@@ -839,6 +865,16 @@ class PairedPatchDataset(Dataset):
         self._sigma_window = sigma_window
         self._crop_mode = crop_mode
         self._crop_grid_size = crop_grid_size
+        self._cache: dict[Path, np.ndarray] | None = None
+        if preload:
+            self._cache = {}
+            all_paths = {p for pair in self._pairs for p in pair}
+            print(f"Preloading {len(all_paths)} images into RAM...", flush=True)
+            for i, path in enumerate(sorted(all_paths), 1):
+                self._cache[path] = _load_image(path)
+                if i % 10 == 0 or i == len(all_paths):
+                    print(f"  {i}/{len(all_paths)} loaded", flush=True)
+            print("Preload complete.", flush=True)
 
     def resample_frames(self) -> None:
         """Resample frames randomly — call at the start of each epoch when
@@ -857,8 +893,12 @@ class PairedPatchDataset(Dataset):
         patch_idx = idx % self._patches_per_image
         clean_path, noisy_path = self._pairs[pair_idx]
 
-        clean_img = _load_image(clean_path)
-        noisy_img = _load_image(noisy_path)
+        if self._cache is not None:
+            clean_img = self._cache[clean_path]
+            noisy_img = self._cache[noisy_path]
+        else:
+            clean_img = _load_image(clean_path)
+            noisy_img = _load_image(noisy_path)
 
         # Identical crop for both images
         h, w, _ = clean_img.shape
@@ -985,6 +1025,7 @@ class PairedVideoSequenceDataset(Dataset):
         sigma_window: int = 7,
         crop_mode: str = "random",
         crop_grid_size: int = 2,
+        preload: bool = False,
     ) -> None:
         if len(clean_sequence_dirs) != len(noisy_sequence_dirs):
             raise ValueError(
@@ -1008,6 +1049,19 @@ class PairedVideoSequenceDataset(Dataset):
         self._crop_grid_size = crop_grid_size
         self._num_sequences = len(self._sequences)
         self._spatial_cache: Optional[dict[str, "torch.Tensor"]] = None
+        self._image_cache: Optional[dict[Path, np.ndarray]] = None
+        if preload:
+            all_paths: set[Path] = set()
+            for clean_frames, noisy_frames in self._sequences:
+                all_paths.update(clean_frames)
+                all_paths.update(noisy_frames)
+            self._image_cache = {}
+            print(f"Preloading {len(all_paths)} frames into RAM...", flush=True)
+            for i, path in enumerate(sorted(all_paths), 1):
+                self._image_cache[path] = _load_image(path)
+                if i % 20 == 0 or i == len(all_paths):
+                    print(f"  {i}/{len(all_paths)} loaded", flush=True)
+            print("Preload complete.", flush=True)
         if self._random_windows and self._windows_per_sequence <= 0:
             raise ValueError("windows_per_sequence must be positive when random_windows is enabled")
         self._clips = (
@@ -1127,8 +1181,12 @@ class PairedVideoSequenceDataset(Dataset):
         clean_paths, noisy_paths = self._sample_frame_paths(idx)
 
         ps = self._patch_size
-        clean_imgs = [_load_image(path) for path in clean_paths]
-        noisy_imgs = [_load_image(path) for path in noisy_paths]
+        if self._image_cache is not None:
+            clean_imgs = [self._image_cache[p] for p in clean_paths]
+            noisy_imgs = [self._image_cache[p] for p in noisy_paths]
+        else:
+            clean_imgs = [_load_image(path) for path in clean_paths]
+            noisy_imgs = [_load_image(path) for path in noisy_paths]
         target_h = max(
             ps,
             max(img.shape[0] for img in clean_imgs),

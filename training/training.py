@@ -802,6 +802,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "--data and --paired-clean are supplied (default: 0.5).")
     parser.add_argument("--no-name-match", action="store_true",
                         help="Match paired images by sorted position rather than filename stem.")
+    parser.add_argument("--cache-dataset", action="store_true",
+                        help="Preload all paired images into RAM at startup (fast epochs, "
+                             "higher memory use).")
     # Common training args
     parser.add_argument("--output", default="checkpoints/run", metavar="DIR")
     parser.add_argument("--epochs", type=int, default=300)
@@ -1197,6 +1200,7 @@ def main() -> None:
     # Build training dataset
     # ------------------------------------------------------------------
     def _make_synthetic_ds(dirs: list[str], *, for_validation: bool = False) -> Dataset:
+        _preload = getattr(args, "cache_dataset", False) and not for_validation
         if is_temporal:
             return VideoSequenceDataset(
                 dirs, noise_generator=noise_gen,
@@ -1209,6 +1213,7 @@ def main() -> None:
                 augment=False if for_validation else True,
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
+                preload=_preload,
             )
         return PatchDataset(
             dirs, noise_generator=noise_gen,
@@ -1218,6 +1223,7 @@ def main() -> None:
             crop_mode=val_crop_mode if for_validation else "random",
             crop_grid_size=val_grid_size,
             frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
+            preload=_preload,
         )
 
     def _make_paired_ds(
@@ -1228,6 +1234,7 @@ def main() -> None:
     ) -> Dataset:
         if len(clean_dirs) != len(noisy_dirs):
             parser.error("--paired-clean and --paired-noisy must have the same number of entries.")
+        _preload = getattr(args, "cache_dataset", False) and not for_validation
         if is_temporal:
             return PairedVideoSequenceDataset(
                 clean_dirs, noisy_dirs,
@@ -1240,6 +1247,7 @@ def main() -> None:
                 augment=False if for_validation else True,
                 crop_mode=val_crop_mode if for_validation else "random",
                 crop_grid_size=val_grid_size,
+                preload=_preload,
             )
         # For spatial: pair each clean/noisy dir entry
         random_frames = not for_validation and getattr(args, "random_spatial_frames", False)
@@ -1254,6 +1262,7 @@ def main() -> None:
                 crop_grid_size=val_grid_size,
                 frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
                 random_frames=random_frames,
+                preload=_preload,
             )
         # Multiple paired dirs → combine
         sub_datasets = [
@@ -1267,6 +1276,7 @@ def main() -> None:
                 crop_grid_size=val_grid_size,
                 frames_per_sequence=val_frames_per_sequence if for_validation else frames_per_sequence,
                 random_frames=random_frames,
+                preload=_preload,
             )
             for c, n in zip(clean_dirs, noisy_dirs)
         ]

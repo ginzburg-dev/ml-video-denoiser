@@ -82,6 +82,7 @@ SKIP_STAGE1="${SKIP_STAGE1:-0}"
 SKIP_STAGE2="${SKIP_STAGE2:-0}"
 SKIP_STAGE3="${SKIP_STAGE3:-1}"
 RESUME="${RESUME:-0}"
+CACHE_DATASET="${CACHE_DATASET:-1}"
 
 # ---------------------------------------------------------------------------
 
@@ -131,6 +132,7 @@ else
     --val-noisy "$VAL_NOISY" \
     --frames-per-sequence "$SPATIAL_FRAMES_PER_SEQUENCE" \
     --random-spatial-frames \
+    $([ "$CACHE_DATASET" == "1" ] && echo "--cache-dataset") \
     --val-frames-per-sequence "$SPATIAL_VAL_FRAMES_PER_SEQUENCE" \
     --val-crop-mode grid \
     --val-grid-size 3 \
@@ -194,6 +196,7 @@ else
     --paired-noisy "$PAIRED_NOISY" \
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
+    $([ "$CACHE_DATASET" == "1" ] && echo "--cache-dataset") \
     --random-temporal-windows \
     --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
     --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
@@ -233,6 +236,7 @@ else
     --paired-noisy "$PAIRED_NOISY" \
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
+    $([ "$CACHE_DATASET" == "1" ] && echo "--cache-dataset") \
     --random-temporal-windows \
     --windows-per-sequence "$WINDOWS_PER_SEQUENCE" \
     --val-windows-per-sequence "$VAL_WINDOWS_PER_SEQUENCE" \
