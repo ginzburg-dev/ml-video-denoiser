@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# generate_mc_noise_pairs_pod.sh — generate synthetic paired noisy/clean frames
+# generate_mc_noise_pairs.sh — generate synthetic paired noisy/clean frames
 # from a single clean image using all presets in a MCNoise JSON bank.
 #
 # Output:
@@ -7,11 +7,11 @@
 #   <OUTPUT_CLEAN>/<preset_name>.exr
 #
 # Usage:
-#   ./scripts/generate_mc_noise_pairs_pod.sh
+#   ./scripts/generate_mc_noise_pairs.sh
 #
 # Override:
 #   DATA_CLEAN=/path/to/frame.exr PRESETS=/path/to/presets.json \
-#     ./scripts/generate_mc_noise_pairs_pod.sh
+#     ./scripts/generate_mc_noise_pairs.sh
 
 set -euo pipefail
 
