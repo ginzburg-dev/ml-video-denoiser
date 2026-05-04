@@ -1,0 +1,50 @@
+[
+  {
+    "name": "MID_LIT_SOFT",
+    "weight": 2.0,
+    "intensity": 0.2892,
+    "samples": 64,
+    "chroma_spread_r": 1.2,
+    "chroma_spread_g": 0.05,
+    "chroma_spread_b": 0.0,
+    "noise_dark_fade": 0.6546,
+    "noise_fade_falloff": 1.2,
+    "firefly_thresh": 0.0,
+    "firefly_prob": 0.0,
+    "firefly_chroma": 0.0,
+    "firefly_dark_fade": 1.0,
+    "firefly_fade_falloff": 1.0
+  },
+  {
+    "name": "MID_LIT_BASE",
+    "weight": 4.0,
+    "intensity": 0.3527,
+    "samples": 64,
+    "chroma_spread_r": 1.5,
+    "chroma_spread_g": 0.05,
+    "chroma_spread_b": 0.0,
+    "noise_dark_fade": 0.6546,
+    "noise_fade_falloff": 1.2,
+    "firefly_thresh": 0.0,
+    "firefly_prob": 0.0,
+    "firefly_chroma": 0.0,
+    "firefly_dark_fade": 1.0,
+    "firefly_fade_falloff": 1.0
+  },
+  {
+    "name": "MID_LIT_STRONG",
+    "weight": 2.0,
+    "intensity": 0.4162,
+    "samples": 64,
+    "chroma_spread_r": 1.8,
+    "chroma_spread_g": 0.05,
+    "chroma_spread_b": 0.0,
+    "noise_dark_fade": 0.6546,
+    "noise_fade_falloff": 1.2,
+    "firefly_thresh": 0.0,
+    "firefly_prob": 0.0,
+    "firefly_chroma": 0.0,
+    "firefly_dark_fade": 1.0,
+    "firefly_fade_falloff": 1.0
+  }
+]
