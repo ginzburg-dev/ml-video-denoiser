@@ -18,12 +18,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TRAINING_DIR="$ROOT_DIR/training"
 
-LOCAL_STORAGE="~/data"
-
-DATA_CLEAN="${DATA_CLEAN:-$HOME/data/tgb_train/TGB_training/train_clean_lit/TGB1004140_mid/TGB1004140.0001.exr}"
+DATASET=/mnt/c/Users/ginzb/YandexDisk/TGB_training
+DATA_CLEAN="${DATA_CLEAN:-$DATASET/train_clean_lit/TGB1004140_mid/TGB1004140.0001.exr}"
 PRESETS="${PRESETS:-$ROOT_DIR/nuke/mc_noise_presets_tgb_lit_patch18_shadowface.json}"
-OUTPUT_NOISY="${OUTPUT_NOISY:-$HOME/data/tgb_train/TGB_training/train_noisy_synth}"
-OUTPUT_CLEAN="${OUTPUT_CLEAN:-$HOME/data/tgb_train/TGB_training/train_clean_synth}"
+OUTPUT_NOISY="${OUTPUT_NOISY:-$DATASET/train_noisy_synth}"
+OUTPUT_CLEAN="${OUTPUT_CLEAN:-$DATASET/train_clean_synth}"
 SEED="${SEED:-42}"
 SKIP_EXISTING="${SKIP_EXISTING:-0}"
 
