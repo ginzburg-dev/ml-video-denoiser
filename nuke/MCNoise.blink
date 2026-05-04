@@ -6,7 +6,9 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
   param:
     int   samples;
     float intensity;
-    float chromaSpread;
+    float chromaSpreadR;
+    float chromaSpreadG;
+    float chromaSpreadB;
     float noiseDarkFade;
     float noiseFadeFalloff;
     float fireflyThresh;
@@ -20,7 +22,9 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
   void define() {
     defineParam(samples,           "Samples",              16);
     defineParam(intensity,         "Intensity",            1.0f);
-    defineParam(chromaSpread,      "Chroma Spread",        0.1f);
+    defineParam(chromaSpreadR,     "Chroma Spread R",      0.3f);
+    defineParam(chromaSpreadG,     "Chroma Spread G",      0.1f);
+    defineParam(chromaSpreadB,     "Chroma Spread B",      0.08f);
     defineParam(noiseDarkFade,     "Noise Dark Fade",      0.0f);
     defineParam(noiseFadeFalloff,  "Noise Fade Falloff",   1.0f);
     defineParam(fireflyThresh,     "Firefly Thresh",       6.0f);
@@ -58,9 +62,9 @@ kernel MCNoise : ImageComputationKernel<ePixelWise>
     float noise     = sigma * lumScale * noiseMask;
 
     float lumaG = gaussian(hash(base + 0), hash(base + 1));
-    float cr    = gaussian(hash(base + 2), hash(base + 3)) * chromaSpread;
-    float cg    = gaussian(hash(base + 4), hash(base + 5)) * chromaSpread;
-    float cb    = gaussian(hash(base + 6), hash(base + 7)) * chromaSpread;
+    float cr    = gaussian(hash(base + 2), hash(base + 3)) * chromaSpreadR;
+    float cg    = gaussian(hash(base + 4), hash(base + 5)) * chromaSpreadG;
+    float cb    = gaussian(hash(base + 6), hash(base + 7)) * chromaSpreadB;
 
     float nr = px.x + (lumaG + cr) * noise;
     float ng = px.y + (lumaG + cg) * noise;

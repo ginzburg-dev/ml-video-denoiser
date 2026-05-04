@@ -9,9 +9,9 @@ Usage -- paste into the Nuke Script Editor and run:
     export_selected("/path/to/output/mc_noise_presets.json")
 
 Each selected node must be a compiled MCNoise BlinkScript with knobs:
-    intensity, samples, chromaSpread, noiseDarkFade, noiseFadeFalloff,
-    fireflyThresh, fireflyProb, fireflyChroma, fireflyDarkFade, fireflyFadeFalloff,
-    mc_weight (Training Weight kernel param)
+    intensity, samples, chromaSpreadR, chromaSpreadG, chromaSpreadB,
+    noiseDarkFade, noiseFadeFalloff, fireflyThresh, fireflyProb, fireflyChroma,
+    fireflyDarkFade, fireflyFadeFalloff, mc_weight (Training Weight kernel param)
 
 The node name becomes the preset "name" in the JSON.
 JSON keys are written as snake_case so training.py can load them directly.
@@ -29,7 +29,9 @@ import nuke
 _KNOB_MAP = (
     ("intensity",          "intensity",           "Intensity"),
     ("samples",            "samples",             "Samples"),
-    ("chromaSpread",       "chroma_spread",       "Chroma Spread"),
+    ("chromaSpreadR",      "chroma_spread_r",     "Chroma Spread R"),
+    ("chromaSpreadG",      "chroma_spread_g",     "Chroma Spread G"),
+    ("chromaSpreadB",      "chroma_spread_b",     "Chroma Spread B"),
     ("noiseDarkFade",      "noise_dark_fade",     "Noise Dark Fade"),
     ("noiseFadeFalloff",   "noise_fade_falloff",  "Noise Fade Falloff"),
     ("fireflyThresh",      "firefly_thresh",      "Firefly Thresh"),
@@ -74,7 +76,7 @@ def _is_mcnoise_node(node):
     if ks is not None and "kernel MCNoise" in ks.value():
         return True
 
-    required = ("Intensity", "Samples", "Chroma Spread")
+    required = ("Intensity", "Samples", "Chroma Spread R")
     return all(_find_knob(node, "", label) is not None for label in required)
 
 

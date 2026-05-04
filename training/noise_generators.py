@@ -193,18 +193,23 @@ class PoissonGaussianNoiseGenerator:
 
 
 class MCNoiseGenerator:
-    """Luminance-dependent grain with chroma spread and firefly spikes.
+    """Luminance-dependent grain with per-channel chroma spread and firefly spikes.
 
     Matches the MCNoise Blink kernel exactly:
       - Per-pixel sigma scales with sqrt(lum) — shot-noise characteristic
-      - Independent chroma perturbation on top of shared luma grain
+      - Independent per-channel chroma perturbation on top of shared luma grain
       - Optional dark fade: noise amplitude can taper toward zero in blacks
       - Optional firefly spikes: rare bright outliers with their own dark fade
+
+    MC render noise has R typically 2–4× noisier than G and B.
+    Use chroma_spread_r >> chroma_spread_g ≈ chroma_spread_b to match this.
 
     Args:
         intensity:            Base noise intensity (default 1.0).
         samples:              Virtual sample count; sigma = intensity / sqrt(samples).
-        chroma_spread:        Independent per-channel chroma noise scale (default 0.1).
+        chroma_spread_r:      R channel chroma noise scale (default 0.3).
+        chroma_spread_g:      G channel chroma noise scale (default 0.1).
+        chroma_spread_b:      B channel chroma noise scale (default 0.08).
         noise_dark_fade:      0 = full noise in shadows, 1 = zero noise in blacks.
         noise_fade_falloff:   Power curve for noise dark fade (1 = linear).
         firefly_thresh:       Firefly spike floor magnitude (default 6.0).
@@ -218,7 +223,9 @@ class MCNoiseGenerator:
         self,
         intensity: float = 1.0,
         samples: int = 16,
-        chroma_spread: float = 0.1,
+        chroma_spread_r: float = 0.3,
+        chroma_spread_g: float = 0.1,
+        chroma_spread_b: float = 0.08,
         noise_dark_fade: float = 0.0,
         noise_fade_falloff: float = 1.0,
         firefly_thresh: float = 6.0,
@@ -228,7 +235,9 @@ class MCNoiseGenerator:
         firefly_fade_falloff: float = 1.0,
     ) -> None:
         self._sigma = intensity / max(samples, 1) ** 0.5
-        self._chroma_spread = chroma_spread
+        self._cs_r = chroma_spread_r
+        self._cs_g = chroma_spread_g
+        self._cs_b = chroma_spread_b
         self._noise_dark_fade = noise_dark_fade
         self._noise_fade_falloff = max(noise_fade_falloff, 0.001)
         self._firefly_thresh = firefly_thresh
@@ -252,7 +261,10 @@ class MCNoiseGenerator:
         noise = self._sigma * lum_scale * noise_mask  # (1, H, W)
 
         luma_g = torch.randn(1, h, w, device=dev, dtype=dtype)
-        chroma = torch.randn(3, h, w, device=dev, dtype=dtype) * self._chroma_spread
+        chroma = torch.randn(3, h, w, device=dev, dtype=dtype)
+        chroma[0] *= self._cs_r
+        chroma[1] *= self._cs_g
+        chroma[2] *= self._cs_b
         noisy = clean + (luma_g + chroma) * noise
 
         if self._firefly_prob > 0.0:
@@ -262,7 +274,8 @@ class MCNoiseGenerator:
             ff_chroma = torch.randn(3, h, w, device=dev, dtype=dtype) * self._firefly_chroma
             noisy = noisy + fire * spike * (1.0 + ff_chroma)
 
-        sigma_map = (noise * (1.0 + self._chroma_spread)).expand_as(clean)
+        avg_cs = (self._cs_r + self._cs_g + self._cs_b) / 3.0
+        sigma_map = (noise * (1.0 + avg_cs)).expand_as(clean)
         return noisy, clean, sigma_map
 
 
@@ -271,7 +284,8 @@ class MCNoiseGenerator:
 # ---------------------------------------------------------------------------
 
 _MC_KNOB_KEYS: tuple[str, ...] = (
-    "intensity", "samples", "chroma_spread",
+    "intensity", "samples",
+    "chroma_spread_r", "chroma_spread_g", "chroma_spread_b",
     "noise_dark_fade", "noise_fade_falloff",
     "firefly_thresh", "firefly_prob", "firefly_chroma",
     "firefly_dark_fade", "firefly_fade_falloff",
@@ -304,15 +318,17 @@ class MCNoisePresetBank:
 
     @classmethod
     def default(cls) -> "MCNoisePresetBank":
-        """Light × 1, medium × 3, heavy × 1 — sensible coverage for most content."""
+        """Light × 1, medium × 3, heavy × 1 — sensible coverage for MC render noise."""
         return cls([
-            (MCNoiseGenerator(intensity=0.5,  samples=32, chroma_spread=0.08,
-                              firefly_prob=0.001),                              1.0, "light"),
-            (MCNoiseGenerator(intensity=1.0,  samples=16, chroma_spread=0.12,
-                              firefly_prob=0.003),                              3.0, "medium"),
-            (MCNoiseGenerator(intensity=2.0,  samples=8,  chroma_spread=0.18,
-                              firefly_thresh=7.0, firefly_prob=0.005,
-                              firefly_chroma=0.15),                             1.0, "heavy"),
+            (MCNoiseGenerator(intensity=0.5,  samples=32,
+                              chroma_spread_r=0.3, chroma_spread_g=0.10, chroma_spread_b=0.08,
+                              firefly_prob=0.0),                                1.0, "light"),
+            (MCNoiseGenerator(intensity=1.0,  samples=16,
+                              chroma_spread_r=0.4, chroma_spread_g=0.12, chroma_spread_b=0.10,
+                              firefly_prob=0.0),                                3.0, "medium"),
+            (MCNoiseGenerator(intensity=2.0,  samples=8,
+                              chroma_spread_r=0.5, chroma_spread_g=0.15, chroma_spread_b=0.12,
+                              firefly_prob=0.0),                                1.0, "heavy"),
         ])
 
     @classmethod
@@ -327,6 +343,12 @@ class MCNoisePresetBank:
             for k in _MC_KNOB_KEYS:
                 if k in item:
                     kwargs[k] = int(item[k]) if k == "samples" else float(item[k])
+            # backwards compat: old chroma_spread sets all three channels equally
+            if "chroma_spread" in item and not any(k in item for k in ("chroma_spread_r", "chroma_spread_g", "chroma_spread_b")):
+                cs = float(item["chroma_spread"])
+                kwargs.setdefault("chroma_spread_r", cs)
+                kwargs.setdefault("chroma_spread_g", cs)
+                kwargs.setdefault("chroma_spread_b", cs)
             entries.append((MCNoiseGenerator(**kwargs), weight, name))
         return cls(entries)
 
