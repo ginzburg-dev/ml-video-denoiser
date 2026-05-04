@@ -159,6 +159,7 @@ _SPATIAL_INFER_OUT="$STAGE1_OUTPUT/infer_spatial_auto_test"
 if [[ -d "$INFER_NOISY" ]]; then
   echo ""
   echo "--- Spatial auto-test: first frame per sequence from $INFER_NOISY ---"
+  mkdir -p "$_SPATIAL_INFER_OUT"
   for _seq_dir in "$INFER_NOISY"/*/; do
     [[ -d "$_seq_dir" ]] || continue
     _seq_name="$(basename "$_seq_dir")"
@@ -167,7 +168,7 @@ if [[ -d "$INFER_NOISY" ]]; then
     python infer.py \
       --checkpoint "$STAGE1_OUTPUT/best.pth" \
       --input "$_first_frame" \
-      --output "$_SPATIAL_INFER_OUT/$_seq_name"
+      --output "$_SPATIAL_INFER_OUT/${_seq_name}.exr"
   done
   echo "--- Spatial auto-test saved to: $_SPATIAL_INFER_OUT ---"
 else
