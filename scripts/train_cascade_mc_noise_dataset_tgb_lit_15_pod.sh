@@ -165,6 +165,9 @@ if [[ -d "$INFER_NOISY" ]]; then
     _seq_name="$(basename "$_seq_dir")"
     _first_frame="$(find "$_seq_dir" -maxdepth 1 -name "*.exr" 2>/dev/null | sort | head -1)"
     [[ -n "$_first_frame" ]] || continue
+    if [[ -f "$_SPATIAL_INFER_OUT/$_seq_name" ]]; then
+      rm -f "$_SPATIAL_INFER_OUT/$_seq_name"
+    fi
     mkdir -p "$_SPATIAL_INFER_OUT/$_seq_name"
     python infer.py \
       --checkpoint "$STAGE1_OUTPUT/best.pth" \
