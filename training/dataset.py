@@ -291,7 +291,8 @@ def _apply_alpha_mask(noisy: Tensor, clean: Tensor, patch: np.ndarray) -> Tensor
     """
     if patch.shape[2] != 4:
         return noisy
-    alpha = torch.from_numpy(patch[:, :, 3:4].transpose(2, 0, 1))  # (1, H, W)
+    alpha_np = np.ascontiguousarray(patch[:, :, 3:4].transpose(2, 0, 1))
+    alpha = torch.from_numpy(alpha_np)  # (1, H, W)
     return clean + (noisy - clean) * alpha
 
 
