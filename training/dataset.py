@@ -121,7 +121,7 @@ def _collect_images_spread(
     dirs: Sequence[str | Path],
     frames_per_sequence: Optional[int],
     random_frames: bool = False,
-) -> tuple[list[Path], bool]:
+) -> list[Path]:
     """Collect image files from *dirs*, optionally spread per sequence subdir.
 
     If *frames_per_sequence* is set:
@@ -131,14 +131,12 @@ def _collect_images_spread(
       with a warning.
 
     Returns:
-        (paths, flat_fallback) where flat_fallback is True if a flat directory
-        was encountered and the limit was ignored.
+        Sorted deduplicated list of image paths from all dirs.
     """
     if frames_per_sequence is None:
-        return _collect_images(dirs), False
+        return _collect_images(dirs)
 
     paths: list[Path] = []
-    flat_fallback = False
 
     for d in dirs:
         root = Path(d)
@@ -155,35 +153,29 @@ def _collect_images_spread(
             if frames:
                 seq_frames.append(frames)
 
-        if seq_frames:
-            # Sequence-folder structure: spread or randomly sample N frames per sequence
-            for frames in seq_frames:
-                if random_frames:
-                    k = min(frames_per_sequence, len(frames))
-                    chosen = random.sample(frames, k)
-                    paths.extend(sorted(chosen))
-                else:
-                    indices = _spread_indices(len(frames), frames_per_sequence)
-                    paths.extend(frames[i] for i in indices)
-        else:
-            # Flat directory — warn and use all images
-            flat_imgs = sorted(
-                p for p in root.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS
-            )
-            if flat_imgs:
-                import warnings
-                warnings.warn(
-                    f"--frames-per-sequence has no effect on flat directory {root} "
-                    "(no sequence subdirectories found). Using all {len(flat_imgs)} images.",
-                    UserWarning,
-                    stacklevel=4,
-                )
-                paths.extend(flat_imgs)
-                flat_fallback = True
-            else:
-                raise ValueError(f"No images found in: {root}")
+        # Flat images at root level
+        flat_imgs = sorted(
+            p for p in root.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS
+        )
 
-    return sorted(set(paths)), flat_fallback
+        if not seq_frames and not flat_imgs:
+            raise ValueError(f"No images found in: {root}")
+
+        # Spread-sample from sequence subdirs
+        for frames in seq_frames:
+            if random_frames:
+                k = min(frames_per_sequence, len(frames))
+                chosen = random.sample(frames, k)
+                paths.extend(sorted(chosen))
+            else:
+                indices = _spread_indices(len(frames), frames_per_sequence)
+                paths.extend(frames[i] for i in indices)
+
+        # Also include flat root-level images
+        if flat_imgs:
+            paths.extend(flat_imgs)
+
+    return sorted(set(paths))
 
 
 def _match_keyed_images(
@@ -430,7 +422,7 @@ class PatchDataset(Dataset):
         frames_per_sequence: Optional[int] = None,
         preload: bool = False,
     ) -> None:
-        self._paths, _ = _collect_images_spread(image_dirs, frames_per_sequence)
+        self._paths = _collect_images_spread(image_dirs, frames_per_sequence)
         if not self._paths:
             raise ValueError(f"No images found in: {list(image_dirs)}")
         self._noise_gen = noise_generator or MixedNoiseGenerator.default()
@@ -758,7 +750,7 @@ def _match_pairs(
     Raises:
         ValueError: If no pairs are found or counts differ (position matching).
     """
-    clean_paths, _ = _collect_images_spread([clean_dir], frames_per_sequence, random_frames)
+    clean_paths = _collect_images_spread([clean_dir], frames_per_sequence, random_frames)
     noisy_paths = _collect_images([noisy_dir])
 
     if not clean_paths:

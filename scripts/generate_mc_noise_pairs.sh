@@ -25,8 +25,14 @@ OUTPUT_NOISY="${OUTPUT_NOISY:-$DATASET/train_noisy_synth}"
 OUTPUT_CLEAN="${OUTPUT_CLEAN:-$DATASET/train_clean_synth}"
 SEED="${SEED:-42}"
 SKIP_EXISTING="${SKIP_EXISTING:-0}"
+CLEAN_OUTPUT="${CLEAN_OUTPUT:-1}"
 
 cd "$TRAINING_DIR"
+
+if [[ "$CLEAN_OUTPUT" == "1" ]]; then
+  echo "Cleaning output dirs..."
+  rm -rf "$OUTPUT_NOISY" "$OUTPUT_CLEAN"
+fi
 
 if [[ ! -f "$DATA_CLEAN" ]]; then
   echo "ERROR: clean image not found: $DATA_CLEAN" >&2
