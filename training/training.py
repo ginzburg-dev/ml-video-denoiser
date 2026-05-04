@@ -429,6 +429,8 @@ def _build_spatial_cache(
     with torch.no_grad():
         for i, path in enumerate(all_paths):
             img = _load_image(path)                         # (H, W, C) float32
+            if img.shape[2] == 4:
+                img = img[:, :, :3]
             frame = _hwc_to_tensor(img).unsqueeze(0)       # (1, C, H, W)
             frame = _apply_color_space(frame.to(device), color_space)
             denoised = model.spatial_stage(frame).squeeze(0).cpu()  # type: ignore[attr-defined]

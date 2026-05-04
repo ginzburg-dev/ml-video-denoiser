@@ -919,6 +919,8 @@ class PairedPatchDataset(Dataset):
 
         clean_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(clean_patch)))
         noisy_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(noisy_patch)))
+        if clean_patch.shape[2] == 4:
+            noisy_t = _apply_alpha_mask(noisy_t, clean_t, clean_patch)
         noise_residual = noisy_t - clean_t
         sigma_map = _local_std_sigma(noise_residual, window=self._sigma_window)
         return noisy_t, clean_t, sigma_map
@@ -1183,6 +1185,8 @@ class PairedVideoSequenceDataset(Dataset):
 
             clean_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(clean_patch)))
             noisy_t = _hwc_to_tensor(np.ascontiguousarray(_rgb(noisy_patch)))
+            if clean_patch.shape[2] == 4:
+                noisy_t = _apply_alpha_mask(noisy_t, clean_t, clean_patch)
             sigma_t = _local_std_sigma(noisy_t - clean_t, window=self._sigma_window)
 
             clean_frames.append(clean_t)

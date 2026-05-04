@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# train_cascade_paired_lit2seq_to_compare.sh — Three-stage NAFNetCascade training
-# on real clean/noisy pairs (no synthetic noise) using the 2 lit sequences.
+# train_cascade_mc_noise_dataset_tgb_lit_15_pod.sh — Three-stage NAFNetCascade training
+# with 18-preset tile-calibrated MCNoise bank (15 percentile buckets + 3 heavy tail).
 #
-# Stage 1  Spatial      NAFNet spatial denoiser on real noisy→clean pairs
+# Stage 1  Spatial      NAFNet spatial denoiser on clean sequences + MCNoise
 # Stage 2  Cascade      Load stage-1 weights, freeze spatial, train temporal stage only
 # Stage 3  Fine-tune    Unfreeze all, joint fine-tune at lower LR
 #
 # Usage:
-#   ./scripts/train_cascade_paired_lit2seq_to_compare.sh
+#   ./scripts/train_cascade_mc_noise_dataset_tgb_lit_15_pod.sh
 #
 # Override any variable on the command line, e.g.:
-#   WORKERS=4 SIZE=small ./scripts/train_cascade_paired_lit2seq_to_compare.sh
+#   WORKERS=4 SIZE=small ./scripts/train_cascade_mc_noise_dataset_tgb_lit_15_pod.sh
 #
 # Skip individual stages:
-#   SKIP_STAGE1=1 SPATIAL_WEIGHTS=/path/to/spatial/best.pth ./scripts/train_cascade_paired_lit2seq_to_compare.sh
-#   SKIP_STAGE2=1 ./scripts/train_cascade_paired_lit2seq_to_compare.sh
-#   SKIP_STAGE3=1 ./scripts/train_cascade_paired_lit2seq_to_compare.sh
+#   SKIP_STAGE1=1 SPATIAL_WEIGHTS=/path/to/spatial/best.pth ./scripts/train_cascade_mc_noise_dataset_tgb_lit_15_pod.sh
+#   SKIP_STAGE2=1 ./scripts/train_cascade_mc_noise_dataset_tgb_lit_15_pod.sh
+#   SKIP_STAGE3=1 ./scripts/train_cascade_mc_noise_dataset_tgb_lit_15_pod.sh
 
 set -euo pipefail
 
@@ -25,19 +25,19 @@ TRAINING_DIR="$ROOT_DIR/training"
 # ---------------------------------------------------------------------------
 # Data paths
 # ---------------------------------------------------------------------------
-PAIRED_CLEAN="${PAIRED_CLEAN:-/workspace/data/TGB_training/train_clean_lit}"
-PAIRED_NOISY="${PAIRED_NOISY:-/workspace/data/TGB_training/train_noisy_lit}"
+DATA_CLEAN="${DATA_CLEAN:-/workspace/data/TGB_training/train_clean_lit}"
 VAL_CLEAN="${VAL_CLEAN:-/workspace/data/TGB_training/val_clean}"
 VAL_NOISY="${VAL_NOISY:-/workspace/data/TGB_training/val_noisy}"
 INFER_NOISY="${INFER_NOISY:-/workspace/data/TGB_training/train_noisy}"
+NOISE_MC_CONFIG="${NOISE_MC_CONFIG:-$ROOT_DIR/nuke/mc_noise_presets_tgb_lit_15.json}"
 
 # ---------------------------------------------------------------------------
 # Model / architecture
 # ---------------------------------------------------------------------------
-SIZE="${SIZE:-exp048}"              # tiny | small | exp048 | standard | wide
-NUM_FRAMES="${NUM_FRAMES:-3}"       # temporal window (odd, ≥3)
+SIZE="${SIZE:-exp048}"
+NUM_FRAMES="${NUM_FRAMES:-3}"
 TEMPORAL_BASE="${TEMPORAL_BASE:-32}"
-EXP_NAME="${EXP_NAME:-paired_lit_2seq}"
+EXP_NAME="${EXP_NAME:-mc_noise_dataset_tgb_lit_15}"
 
 # ---------------------------------------------------------------------------
 # Output paths
@@ -64,6 +64,7 @@ SPATIAL_LR="${SPATIAL_LR:-1e-4}"
 STAGE2_LR="${STAGE2_LR:-1e-4}"
 STAGE3_LR="${STAGE3_LR:-2e-5}"
 
+NOISE="${NOISE:-mc}"
 SPATIAL_LOSS="${SPATIAL_LOSS:-l1}"
 STAGE2_LOSS="${STAGE2_LOSS:-l1}"
 STAGE3_LOSS="${STAGE3_LOSS:-l1}"
@@ -91,27 +92,33 @@ RESUME="${RESUME:-0}"
 
 cd "$TRAINING_DIR"
 
+if [[ "$NOISE" != "mc" ]]; then
+  echo "ERROR: this script is intended for MCNoise training only. Set NOISE=mc." >&2
+  exit 1
+fi
+
+if [[ ! -f "$NOISE_MC_CONFIG" ]]; then
+  echo "ERROR: MCNoise preset bank not found: $NOISE_MC_CONFIG" >&2
+  exit 1
+fi
+
 _resume_flag() {
   local ckpt="$1/last.pth"
   [[ "$RESUME" == "1" && -f "$ckpt" ]] && echo "--resume $ckpt"
 }
 
 echo "========================================================"
-echo "  NAFNetCascade — paired lit 2-seq training"
+echo "  NAFNetCascade — MCNoise lit-15 (18 presets) training"
 echo "  Size:             $SIZE"
 echo "  Num frames:       $NUM_FRAMES"
 echo "  Temporal base:    $TEMPORAL_BASE"
 echo "  Experiment:       ${EXP_NAME:-<default>}"
-echo "  Paired clean:     $PAIRED_CLEAN"
-echo "  Paired noisy:     $PAIRED_NOISY"
+echo "  MC config:        $NOISE_MC_CONFIG"
 echo "  Stage 1 output:   $STAGE1_OUTPUT  (${SPATIAL_EPOCHS} epochs)$([ "$SKIP_STAGE1" == "1" ] && echo " [SKIP]")"
 echo "  Stage 2 output:   $STAGE2_OUTPUT  (${STAGE2_EPOCHS} epochs)$([ "$SKIP_STAGE2" == "1" ] && echo " [SKIP]")"
 echo "  Stage 3 output:   $STAGE3_OUTPUT  (${STAGE3_EPOCHS} epochs)$([ "$SKIP_STAGE3" == "1" ] && echo " [SKIP]")"
 echo "========================================================"
 
-# ---------------------------------------------------------------------------
-# Stage 1 — Spatial denoiser
-# ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE1" == "1" ]]; then
   echo ""
   echo "--- Stage 1 skipped (SKIP_STAGE1=1), using weights: $SPATIAL_WEIGHTS ---"
@@ -122,6 +129,8 @@ else
     --model spatial \
     --size "$SIZE" \
     --color-space "$COLOR_SPACE" \
+    --noise "$NOISE" \
+    --noise-mc-config "$NOISE_MC_CONFIG" \
     --loss "$SPATIAL_LOSS" \
     --scheduler "$SPATIAL_SCHEDULER" \
     --plateau-patience "$SPATIAL_PLATEAU_PATIENCE" \
@@ -129,8 +138,7 @@ else
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
     --patches-per-image "$PATCHES_PER_IMAGE" \
-    --paired-clean "$PAIRED_CLEAN" \
-    --paired-noisy "$PAIRED_NOISY" \
+    --data "$DATA_CLEAN" \
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
     --frames-per-sequence "$SPATIAL_FRAMES_PER_SEQUENCE" \
@@ -167,9 +175,6 @@ else
   echo "--- Spatial auto-test skipped (INFER_NOISY not found: $INFER_NOISY) ---"
 fi
 
-# ---------------------------------------------------------------------------
-# Stage 2 — Cascade temporal stage only (spatial frozen)
-# ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE2" == "1" ]]; then
   echo ""
   echo "--- Stage 2 skipped (SKIP_STAGE2=1) ---"
@@ -182,6 +187,8 @@ else
     --num-frames "$NUM_FRAMES" \
     --temporal-base "$TEMPORAL_BASE" \
     --color-space "$COLOR_SPACE" \
+    --noise "$NOISE" \
+    --noise-mc-config "$NOISE_MC_CONFIG" \
     --loss "$STAGE2_LOSS" \
     --scheduler "$STAGE2_SCHEDULER" \
     --plateau-patience "$STAGE2_PLATEAU_PATIENCE" \
@@ -189,8 +196,7 @@ else
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
     --patches-per-image "$PATCHES_PER_IMAGE" \
-    --paired-clean "$PAIRED_CLEAN" \
-    --paired-noisy "$PAIRED_NOISY" \
+    --data "$DATA_CLEAN" \
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
     --random-temporal-windows \
@@ -206,9 +212,6 @@ else
     $(_resume_flag "$STAGE2_OUTPUT")
 fi
 
-# ---------------------------------------------------------------------------
-# Stage 3 — Joint fine-tune (all layers)
-# ---------------------------------------------------------------------------
 if [[ "$SKIP_STAGE3" == "1" ]]; then
   echo ""
   echo "--- Stage 3 skipped (SKIP_STAGE3=1) ---"
@@ -221,6 +224,8 @@ else
     --num-frames "$NUM_FRAMES" \
     --temporal-base "$TEMPORAL_BASE" \
     --color-space "$COLOR_SPACE" \
+    --noise "$NOISE" \
+    --noise-mc-config "$NOISE_MC_CONFIG" \
     --loss "$STAGE3_LOSS" \
     --scheduler "$STAGE3_SCHEDULER" \
     --plateau-patience "$STAGE3_PLATEAU_PATIENCE" \
@@ -228,8 +233,7 @@ else
     --batch-size "$BATCH_SIZE" \
     --patch-size "$PATCH_SIZE" \
     --patches-per-image "$PATCHES_PER_IMAGE" \
-    --paired-clean "$PAIRED_CLEAN" \
-    --paired-noisy "$PAIRED_NOISY" \
+    --data "$DATA_CLEAN" \
     --val-clean "$VAL_CLEAN" \
     --val-noisy "$VAL_NOISY" \
     --random-temporal-windows \
