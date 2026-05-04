@@ -213,15 +213,17 @@ def _match_keyed_images(
     noisy_keys = set(noisy_by_key)
     missing_noisy = sorted(clean_keys - noisy_keys)
     if missing_noisy:
-        raise ValueError(
-            "Clean frames have no matching noisy counterpart: "
+        import warnings
+        warnings.warn(
+            f"Skipping {len(missing_noisy)} clean frame(s) with no noisy counterpart: "
             + ", ".join(missing_noisy[:5])
             + (" ..." if len(missing_noisy) > 5 else "")
         )
 
     # Extra noisy frames (noisy_keys - clean_keys) are silently dropped —
     # this is expected when clean_paths were spread-sampled.
-    return [(clean_by_key[key], noisy_by_key[key]) for key in sorted(clean_keys)]
+    matched_keys = clean_keys & noisy_keys
+    return [(clean_by_key[key], noisy_by_key[key]) for key in sorted(matched_keys)]
 
 
 def _load_image(path: Path) -> np.ndarray:
